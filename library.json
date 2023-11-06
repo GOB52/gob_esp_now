@@ -1,0 +1,22 @@
+{
+    "name": "gob_esp_now",
+    "description": "This library is wrapped with ESP-NOW.",
+    "keywords": "M5Stack,ESP-NOW",
+    "authors": {
+        "name": "GOB",
+        "url": "https://github.com/GOB52",
+        "maintainer": true
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/GOB52/gob_esp_now.git"
+    },
+    "version": "0.0.0",
+    "build": {
+        "libArchive": false
+    },
+    "headers": "gob_esp_now.hpp",
+    "license": "MIT",
+    "platforms": "espressif32",
+    "frameworks": "arduino",
+}
