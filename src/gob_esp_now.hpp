@@ -114,6 +114,29 @@ inline bool operator==(const MACAddress& a, const MACAddress& b)
 inline bool operator!=(const MACAddress& a, const MACAddress& b) { return !(a == b); }
 /// @}
 
+struct Packet
+{
+    enum Type : uint8_t
+    {
+        None,
+        DeclarePrimary,
+        DeclareSecondary,
+        YourIdentifier,
+        SyncTime,
+        //
+        UserType,
+
+    };
+    static constexpr uint32_t HEADER = 0X304e4547; // "GEN0" [G]ob_[E]sp_[N]ow header version [0]
+
+    uint32_t header{HEADER};
+    uint8_t type{};
+    uint8_t reserved[3]{};
+    
+    explicit Packet(const Type t) : type(t) {}
+    inline explicit operator bool() const noexcept { return header == HEADER; }
+    inline bool     operator !()    const noexcept { return !static_cast<bool>(*this); }
+};
 
 /*!
   @class Communicator
@@ -209,7 +232,7 @@ class Communicator
 class ConnectingCommunicator : public Communicator
 {
   public:
-    ConnectingCommunicator() : Communicator() {}
+    explicit ConnectingCommunicator(const uint8_t maxPeer = 2) : Communicator(), _maxPeer(maxPeer) { assert(_maxPeer >= 2 && "max peeer is too small"); }
     virtual ~ConnectingCommunicator() {}
 
     const MACAddress& primaryAddress() const { return isPrimary() ? address() : _primary; }
@@ -232,6 +255,7 @@ class ConnectingCommunicator : public Communicator
     std::vector<MACAddress> _secandary{};
     static constexpr uint8_t INVALID_ID = 0xff;
     uint8_t _id{INVALID_ID};
+    uint8_t _maxPeer{};
 };
 
 /*!
@@ -265,45 +289,28 @@ class SynchronousCommunicator: public Communicator
     std::vector<uint8_t> _extra;
 };
 
-/*!
-  @struct RUDPHeader
-  @note Like the RUDP
-  @sa https://en.wikipedia.org/wiki/Reliable_User_Datagram_Protocol
- */
-struct RUDPHEader
-{
-    /*! @enum Flag
-     */
-    enum Flag : uint8_t
-    {
-        Data, //!< @brief Packet is any data.
-        Ack   //!< @brief Packet is ACK.
-    };
-
-    uint32_t magic{};    //!< @brief Application-specific magic No.
-    Flag flag{};         //!< @brief Flag
-    uint8_t channel{};   //!< @brief channel No.
-    uint8_t reserved[2];
-    uint32_t sequence{}; //!< Sequence No.
-    uint32_t ack{};      //!< Received sequence No.
-}; // packed
-
+#if 0
 class RUDPCommunicator : public Communicator
 {
   public:
     RUDPCommunicator() : Communicator() {}
 
+
+    uint64_t lastACK() const;
+    uint64_t sequenceNo() const;
+    bool ready() const { return sequenceNo <= lastACK; }
+    bool sendAck(int deviceId, const void* data, uint8_t length);
+
+    
   protected:    
     virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length) override;
     virtual void onSent(const MACAddress& addr, esp_now_send_status_t status) override;
 
   private:
-    uint64_t _sequence{}, _sequenceAck{};
-    uint64_t _ack[8];
-
-    
-
+    uint64_t _sequence{}, _sequenceAck{}
+    std::vector<uint8_t*> _rbuff;
 };
+#endif
 
 //
 }}

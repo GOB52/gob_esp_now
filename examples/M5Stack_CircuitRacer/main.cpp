@@ -11,7 +11,8 @@
 
 #define ANALOG_CENTER 1864
 
-#define SOUND_VOLUME 64     // speaker volume setting (default:64)
+//#define SOUND_VOLUME 64     // speaker volume setting (default:64)
+#define SOUND_VOLUME 0     // speaker volume setting (default:64)
 
 #if !defined ( LGFX_SDL )
 
@@ -31,21 +32,24 @@
 // #include <M5UnitOLED.h>      // use Unit OLED
 #include <M5Unified.h>
 
-
+#include <FreeRTOS/freeRTOS.h>
+#include <FreeRTOS/semphr.h>
 #include <WiFi.h>
 #include <gob_esp_now.hpp>
 #include <esp_sntp.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
 #include <ctime>
+#include <chrono>
 using namespace goblib::esp_now;
 
 static ConnectingCommunicator ccom;
 static SynchronousCommunicator scom;
 
-static time_t startTime{};
+static volatile time_t startTime{};
+static volatile int countDown{};
 static uint8_t deviceId{0xff};
-constexpr char posixTZ[] = "JST-9";
+constexpr char posixTZ[] = "JST-9"; // To be the same on each device.
 static LGFX_Sprite cd_sprite;
 
 PROGMEM const char ntp0[] = "ntp.nict.jp";
@@ -56,13 +60,34 @@ const char* ntp[] = { ntp0, ntp1, ntp2 };
 #if defined (__M5UNIFIED_HPP__)
 
 static auto &display = M5.Display;
-
 static bool input_pressed = false;
 
+struct ESP32Clock
+{
+    using duration = std::chrono::microseconds;
+    using rep = duration::rep;
+    using period = duration::period;
+    using time_point = std::chrono::time_point<ESP32Clock>;
+    static const bool is_steady = true;
+    static time_point now() noexcept { return time_point( duration(static_cast<rep>(esp_timer_get_time())) ); }
+};
+using UpdateDuration =std::chrono::duration<float, std::ratio<1, 30 /*fps*/> >;
+constexpr UpdateDuration durationTime{1};
+ESP32Clock::time_point lastTime{};
+float fps{};
+
+void sleepUntil(const std::chrono::time_point<ESP32Clock, UpdateDuration>& absTime)
+{
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(absTime - ESP32Clock::now()).count();
+    auto ms = us > 0 ? us / 1000 : 0;
+    delay(ms);
+    while(ESP32Clock::now() < absTime){ taskYIELD(); }
+}
+
+
+// Time synchronization
 void configTime()
 {
-    M5_LOGI("Configrate time");
-
     // WiFi connect
     WiFi.begin(); // Connect to credential in Hardware. (ESP32 saves the last WiFi connection)
     int tcount = 32;
@@ -81,7 +106,6 @@ void configTime()
         abort();
     }
 
-    // waiting for time scomhronization
     configTzTime(posixTZ, ntp[0], ntp[1], ntp[2]);
     int32_t retry{10};    
     sntp_sync_status_t st;
@@ -1106,7 +1130,8 @@ enum game_mode_t
   racing,
 };
 
-#define DRIFT_LEVEL 7
+//#define DRIFT_LEVEL 7
+#define DRIFT_LEVEL 0
 #define REPLAY_STEP_MAX 384
 #define REPLAY_SPAN_SHIFT 8   // 8 == 256msec span
 
@@ -1125,12 +1150,12 @@ static float stage_select_angle = 0;
 //static point_u16_t record_replay[REPLAY_STEP_MAX];
 
 static volatile game_mode_t game_mode = game_mode_t::nothing;
-static std::uint32_t msec_lapstart = 0;
+//static std::uint32_t msec_lapstart = 0;
 static std::uint32_t msec_best_lap = ~0u;
 static std::uint32_t msec_prev_lap = 0;
-static char best_lap_str[16];
-static char prev_lap_str[16];
-static char lap_str[16];
+static char best_lap_str[64];
+static char prev_lap_str[64];
+static char lap_str[64];
 
 static std::int32_t lcd_width;
 static std::int32_t lcd_height;
@@ -1146,16 +1171,307 @@ static LGFX_Sprite sp_steering; // ステアリング画像;
 static LGFX_Sprite sp_panel;  // メーターパネル画像;
 static LGFX_Sprite sp_needle; // メーター針画像;
 
+static volatile int player_steering_angle = 0;
+#if 0
 static volatile int player_x; // 自機座標;
 static volatile int player_y;
-static volatile int player_steering_angle = 0;
 static volatile float player_tacho = 0;
 static volatile float player_speed = 0;
 static volatile uint32_t player_f;   // 自機角度;
+#endif
+
+struct Car
+{
+  int x{},y{}; // 座標
+  int steering_angle{}; // ステアリング角度
+  float tacho{};
+  float speed{};
+  uint32_t f{};
+  int yaw{};     /// 旋回動作増分;
+  int add_x{}, add_y{};
+  int f16{};
+  int prev_texture_id{};
+  uint32_t msec_lapstart{};
+  uint32_t updateCount{};
+    
+  void update(int sa, uint32_t msec, bool self)
+  {
+    ++(this->updateCount);
+    this->steering_angle = sa;
+    this->yaw += this->steering_angle;
+    this->yaw = ((this->yaw * 16) + 8) / 17;
+    this->f = ((this->f16 += this->yaw) >> 16) & 1023;
+
+    auto rcos = icos(this->f);
+    auto rsin = isin(this->f);
+
+    size_t next_x = (this->x + this->add_x);
+    size_t tmp_x = next_x >> 16;
+    size_t next_y = (this->y + this->y);
+    size_t tmp_y = this->y >> 16;
+
+    uint32_t texture_id = texture_id_t::outside;
+    if ((tmp_x | tmp_y) < 256)
+    {
+        texture_id = sp_map.readPixelValue(tmp_x, tmp_y);
+    }
+
+    int add_x = (this->add_x >> 3);
+    int add_y = (this->add_y >> 3);
+    int speed = ((add_x * add_x) + (add_y * add_y)) >> 16;
+    float tacho = speed / 4.0f;
+    this->speed = (this->speed * 2 + (speed / 2.2f)) / 4;
+    if (tacho < 20.0f) { tacho = 20.0f; }
+    else
+    {
+      while (tacho > 100.0f)
+      {
+        tacho = tacho * 0.73f;
+      }
+    }
+    this->tacho = (this->tacho * 3 + tacho * 2.2f) / 4;
+
+#if defined (__M5UNIFIED_HPP__) && ( SOUND_VOLUME > 0 )
+    if(self)
+    {
+      int32_t drifted_f = (int32_t)(atan2f(add_y, add_x) * 512 / M_PI) & 0x3FF;
+
+      //printf("rad:%04d  %04d  %04d\r\n", drifted_f, player_f, diff);
+      M5.Speaker.tone(this->tacho / 2, 128, 0, true, wav_engine, sizeof(wav_engine));
+
+      uint32_t diff = (drifted_f > this->f ? (drifted_f - this->f) : (this->f - drifted_f));
+      if (diff >= 512) { diff = 1024 - diff; }
+      int v = (speed * diff) >> 10;
+      if (v > 64) { v = 64; }
+      M5.Speaker.setChannelVolume(1, v);
+      M5.Speaker.tone(800 + (rand() & 63), 100, 1, true);
+    }
+#endif
+
+    int player_add_x_target = rcos;
+    int player_add_y_target = rsin;
+    //player_add_x_target >>= 3;
+    //player_add_y_target >>= 3;
+
+    bool course_out = (((texture_id & 0x1F) == texture_id_t::outside) // 壁抜け防止
+                       || (texture_id == flag_1 && this->prev_texture_id == flag_2)); // 逆走防止
+    if (course_out)
+    {
+        this->x -= this->add_x;
+        this->y -= this->add_y;
+        player_add_x_target = 0;
+        player_add_y_target = 0;
+        this->add_x = 0;
+        this->add_y = 0;
+        next_x = this->x;
+        next_y = this->y;
+        texture_id = sp_map.readPixelValue(this->x >> 16, this->y >> 16);
+    }
+    this->x += (this->add_x + 3) >> 3; // 自機移動
+    this->y += (this->add_y + 3) >> 3; // 自機移動
+
+    if (course_out || (texture_id & 0x1F) > road_1)
+    { /// 縁石テクスチャ上に来た時、コースアウト判定のために現在地点の地面の色パレット番号を取得する;
+      auto texture = (uint8_t*)sp_texture[texture_id & 0x1F].getBuffer();
+      uint32_t tx = (texture_id & texture_id_t::lr_invert) ? ~next_x : next_x;
+      uint32_t ty = (texture_id & texture_id_t::ud_invert) ? ~next_y : next_y;
+      auto color = (texture_palette_id_t)texture[((tx >> 11) & 0x1F) + ((ty >> 6) & 0x3E0)];
+      bool outside = (bool)(color >= texture_palette_id_t::pal_outside_0) != (bool)(texture_id & texture_id_t::io_invert);
+      size_t shift = 0;
+      if (!course_out && (color & texture_palette_id_t::pal_red_0))
+      { // 縁石;
+        shift = 1;
+      }
+      else if (course_out || outside)
+      { // コース外;
+        shift = 2;
+        int right_out = 0;
+        int left_out = 0;
+        for (int i = 1; i < 4; ++i)
+        {
+          int right_x = this->x - (rsin * i);
+          int right_y = this->y + (rcos * i);
+          int right_texture_id = sp_map.readPixelValue(right_x >> 16, right_y >> 16) & 0x1F;
+          right_out = right_texture_id == texture_id_t::outside ? 2
+                  : right_texture_id == texture_id_t::road_1 ? 0 : 1;
+
+          int left_x = this->x + (rsin * i);
+          int left_y = this->y - (rcos * i);
+          int left_texture_id = sp_map.readPixelValue(left_x >> 16, left_y >> 16) & 0x1F;
+          left_out = left_texture_id == texture_id_t::outside ? 2
+                  : left_texture_id == texture_id_t::road_1 ? 0 : 1;
+          if (left_out != right_out) { break; }
+        }
+        if (right_out > left_out)
+        {
+          player_add_x_target += rsin;
+          player_add_y_target -= rcos;
+          this->f16 += (1024 - 2) << 16;
+        }
+        else if (right_out < left_out)
+        {
+          player_add_x_target -= rsin;
+          player_add_y_target += rcos;
+          this->f16 += 2 << 16;
+        }
+      }
+      if (shift)
+      {
+        player_add_x_target >>= shift;
+        player_add_y_target >>= shift;
+      }
+    }
+    //*/
+#if DRIFT_LEVEL == 0
+    this->add_x = player_add_x_target;
+    this->add_y = player_add_y_target;
+#else
+    this->add_x = player_add_x_target + (((this->add_x - player_add_x_target) << DRIFT_LEVEL) + (1 << (DRIFT_LEVEL - 1))) / ((1 << DRIFT_LEVEL) + 1);
+    this->add_y = player_add_y_target + (((this->add_y - player_add_y_target) << DRIFT_LEVEL) + (1 << (DRIFT_LEVEL - 1))) / ((1 << DRIFT_LEVEL) + 1);
+#endif
+
+    if (this->prev_texture_id == flag_1 && texture_id == flag_2)
+    { // 一周判定
+      int laptime = this->msec_lapstart ? msec - this->msec_lapstart : 0;
+#if 0
+          if (laptime > 1024)
+          {
+              msec_prev_lap = laptime;
+              //        strncpy(prev_lap_str, lap_str, sizeof(prev_lap_str));
+
+              if (msec_best_lap > msec_prev_lap)
+              {
+                  msec_best_lap = msec_prev_lap;
+                  strncpy(best_lap_str, lap_str, sizeof(best_lap_str));
+                  //memcpy(record_replay, current_replay, sizeof(current_replay));
+              }
+          }
+#endif          
+      this->msec_lapstart = msec;
+       //memset(current_replay, 0, sizeof(current_replay));
+    }
+    this->prev_texture_id = texture_id;
+  }
+};
+
+#define CAR_MAX (2)
+static Car car[CAR_MAX];
+
+struct KeyPacket : public Packet
+{
+    static constexpr Type Ktype = (Packet::Type)(Packet::Type::UserType + 1);
+    KeyPacket() : Packet(Ktype) {}
+    uint32_t seq{};
+    uint32_t ack{};
+    int id{};
+    int steering_angle{};
+};
+
+
+// Scoped exclusive control
+struct lock_guard
+{
+    lock_guard (SemaphoreHandle_t& s) : _sem(s) { xSemaphoreTake(s, portMAX_DELAY); }
+    ~lock_guard()                               { xSemaphoreGive(_sem); }
+  private:
+    SemaphoreHandle_t _sem{};
+};
+
+
+class KeyComm : public Communicator
+{
+  public:
+
+    KeyComm() : Communicator()
+    {
+      _sem = xSemaphoreCreateBinary();
+      assert(_sem && "sempaho null");
+      xSemaphoreGive(_sem);
+    }
+
+    bool ready() const { lock_guard lock(_sem); return _canSend && (_seq <= _ack); }
+
+    void take() { xSemaphoreTake(_sem, portMAX_DELAY); }
+    void give() { xSemaphoreGive(_sem); }
+    const std::vector<KeyPacket>& recvData() const { return _recv; }
+    const std::vector<KeyPacket>& sendData() const { return _send; }
+
+    size_t numOfRecvData() const { lock_guard lock(_sem); return _recv.size(); }
+    size_t numOfSendData() const { lock_guard lock(_sem); return _send.size(); }
+    uint32_t sequence() const { return _seq; }
+    uint32_t ack() const { lock_guard lock(_sem); return _ack; }
+    
+
+    void clear(const uint32_t ack)
+    {
+      // ACK までの送信データは削除
+      auto it = std::remove_if(_send.begin(), _send.end(), [&ack](KeyPacket& k) { return k.seq <= ack; });
+      _send.erase(it, _send.end());
+      // ACK までの受信データは削除
+      it = std::remove_if(_recv.begin(), _recv.end(), [&ack](KeyPacket& k) { return k.seq <= ack; });
+      _recv.erase(it, _recv.end());
+    }
+
+    bool sendSteer(int id, int st)
+    {
+      if(numOfPeer() > 0)
+      {
+        if(!ready())
+        {
+          M5_LOGE("Not send");
+          return false;
+        }
+        lock_guard lock(_sem);
+
+        _sendTime = millis();
+        KeyPacket pkt;
+        pkt.seq = ++_seq;
+        pkt.ack = _ack;
+        pkt.steering_angle = st;
+        pkt.id = id;
+        _send.push_back(pkt);
+        return send(pkt);
+      }
+      return false;
+    }
+
+    
+  protected:
+    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length)
+    {
+        const KeyPacket* p = (const KeyPacket*)data;
+        if(p->type == KeyPacket::Ktype)
+        {
+          lock_guard lock(_sem);
+          _ack = p->seq;
+          _recv.push_back(*p);
+        }
+    }
+    
+    virtual void onSent(const MACAddress& addr, esp_now_send_status_t status)
+    {
+        lock_guard lock(_sem);
+        _canSend = true;
+    }
+
+
+  private:
+    unsigned long _sendTime{};
+    volatile uint32_t _seq{};
+    volatile uint32_t _ack{};
+    std::vector<KeyPacket> _send{}, _recv{};
+    volatile bool _canSend{true};
+    mutable SemaphoreHandle_t _sem{};
+    
+};
+KeyComm kcom;
+
+
 
 static volatile int ghostcar_x; // ゴーストカー座標(ベストラップリプレイ);
 static volatile int ghostcar_y;
 static volatile uint32_t fpsCounter;
+static uint32_t frameCount{};
 
 static uint32_t texture_palette_16x2x2[2][texture_palette_id_t::pal_max];
 
@@ -1763,9 +2079,17 @@ struct stage_data_t
     int flag_h = flag_bottom - flag_top + 1;
     sp->fillRect(flag_left, flag_top, flag_w, flag_h, texture_id_t::flag_1);
 
+#if 0
     player_x = (flag_left + flag_right + 1) << 15;
     player_y = (flag_top + flag_bottom + 1) << 15;
-
+#else
+    for(auto& c: car)
+    {
+      c.x = (flag_left + flag_right + 1) << 15;
+      c.y = (flag_top + flag_bottom + 1) << 15;
+    }
+#endif
+    
     int direction = -1;
 
     // マップ左上3x3の9ピクセルをチェック (進行方向マーカー確認);
@@ -1819,10 +2143,18 @@ struct stage_data_t
       }
     }
     // ゲーム開始時の進行方向を設定する;
+#if 0
     player_f = direction * 64;
     player_x -= icos(player_f) * 6; // ゲーム開始地点をフラッグ後方にセットする
     player_y -= isin(player_f) * 6;
-
+#else
+    for(auto& c : car)
+    {
+      c.f = direction * 64;
+      c.x -= icos(c.f) * 6;
+      c.y -= isin(c.f) * 6;
+    }
+#endif    
     // 逆走防止用にフラッグ出口側をflag_2に変更する;
     {
       switch (direction)
@@ -1861,10 +2193,11 @@ static constexpr const size_t stage_data_max = sizeof(stage_data_list) / sizeof(
 
 void gameTask(void*)
 {
+#if 0
   int player_yaw = 0;     /// 旋回動作増分;
   int player_add_x = 0, player_add_y = 0;
   int player_f16 = 0;
-
+#endif
   uint32_t input_count = 0;
   uint32_t msec_start = lgfx::millis();
   uint32_t prev_ghost_framecount = ~0u;
@@ -1889,20 +2222,23 @@ void gameTask(void*)
     M5.update();
 #endif
 
-    int lr = funcInputLeftRight();
-    player_steering_angle = std::max<int>(-32768, std::min<int>(32768, lr));
+    int lr = 0;
+    if (game_mode != game_mode_t::racing)
+    {
+        lr = funcInputLeftRight();
+        player_steering_angle = std::max<int>(-32768, std::min<int>(32768, lr));
+    }
 
     if (game_mode == game_mode_t::choose_connection)
     {
-      // Other devises became primary.
+      // Other devises became primary?
       if(ccom.isSecondary() && ccom.validIdentifier())
       {
-        M5_LOGI("Other devises became primary.");
         deviceId = ccom.identifier();
         game_mode = game_mode_t::waiting;
         scom.assign(ccom);
-        scom.begin();
         ccom.end();
+        M5_LOGI("Other devises became primary. myid:%d", deviceId);
         M5_LOGI("numOfPeer:%d", Communicator::numOfPeer());
         continue;
       }
@@ -1910,11 +2246,12 @@ void gameTask(void*)
       //if(funcInputEnter())
       if(M5.BtnB.wasClicked())
       {
+        input_pressed = 0;
         if(ccom.declarePrimary())
         {
+            M5_LOGI("declare primary");
             deviceId = ccom.identifier();
             game_mode = game_mode_t::stage_select;
-            input_pressed = 0;
         }
         else
         {
@@ -1924,20 +2261,21 @@ void gameTask(void*)
       continue;
     }
 
-    //
+    // waiting (Secondary)
     if( game_mode == game_mode_t::waiting)
     {
       if(scom.syncTime())
       {
         startTime = scom.syncTime();
+        countDown = (int)(startTime - std::time(nullptr));
         stage_index = *(int32_t*)scom.extra();
-        M5_LOGI("recive synctime and stage: %ld / %d", startTime, stage_index);
-        
+        M5_LOGI("receive synctime and stage: %ld / %d", startTime, stage_index);
+
         stage_data_list[stage_index].makeCourse(&sp_map);
         input_count += 128;
-        msec_lapstart = 0;
-        player_f16 = player_f << 16;
-        game_mode = game_mode_t::racing;
+        //msec_lapstart = 0;
+        //player_f16 = player_f << 16;
+        for(auto& c : car) { c.msec_lapstart = 0; c.f16 = c.f << 16; }
         do
         {
           player_steering_angle = funcInputLeftRight();
@@ -1964,7 +2302,6 @@ void gameTask(void*)
         if (enter)
         {
           scom.assign(ccom);
-          scom.begin();
           M5_LOGI("numOfPeer:%d", Communicator::numOfPeer());
           ccom.end();
             
@@ -1972,11 +2309,13 @@ void gameTask(void*)
           M5_LOGI("send syncTime and stage");
           scom.sendSyncTime(t, &stage_index, sizeof(stage_index));
           startTime = t;
+          countDown = (int)(startTime - std::time(nullptr));
 
           stage_data_list[stage_index].makeCourse(&sp_map);
           input_count += 128;
-          msec_lapstart = 0;
-          player_f16 = player_f << 16;
+          //msec_lapstart = 0;
+          //player_f16 = player_f << 16;
+          for(auto& c : car) { c.msec_lapstart = 0; c.f16 = c.f << 16; }
           game_mode = game_mode_t::racing;
           do
           {
@@ -2047,54 +2386,33 @@ void gameTask(void*)
       continue;
     }
 
+    // --- game_mode_t::racing
+    // count down for start
+    if(countDown > 0 && startTime)
+    {
+      countDown = (int)(startTime - std::time(nullptr));
+    }
+    // Waiting for start synchronization
     if(startTime)
     {
         if(!scom.reachSyncTime()) { continue; }
-        //startTime = 0;
+        frameCount = 0;
+        M5_LOGI("startGame[%d]:%d", deviceId, Communicator::numOfPeer());
+        kcom.assign(scom);
+        scom.end();
+        startTime = 0;
     }
-    
 
-    if (msec_lapstart)
-    {
-      uint32_t lap_msec = (msec - msec_lapstart);
-      uint32_t ghost_framecount = lap_msec >> REPLAY_SPAN_SHIFT;
+    // Keystroke synchronous communication
+    if(!kcom.ready()) { continue; }
+
+    lr = funcInputLeftRight();
+    player_steering_angle = std::max<int>(-32768, std::min<int>(32768, lr));
+
 #if 0
-      static const point_u16_t* ghost_prev_pos = record_replay;
-      static const point_u16_t* ghost_next_pos = record_replay;
-      
-      if (prev_ghost_framecount != ghost_framecount)
-      {
-        prev_ghost_framecount = ghost_framecount;
-        if (ghost_framecount < REPLAY_STEP_MAX)
-        {
-          current_replay[ghost_framecount].x = (player_x + 128) >> 8;
-          current_replay[ghost_framecount].y = (player_y + 128) >> 8;
-
-          if (ghost_framecount == 0)
-          {
-            ghost_next_pos = record_replay;
-          }
-          ghost_prev_pos = ghost_next_pos;
-          ghost_next_pos = &record_replay[ghost_framecount + 1];
-        }
-        if (ghost_framecount >= (REPLAY_STEP_MAX - 1) || ghost_next_pos->x == 0)
-        {
-          ghost_next_pos = nullptr;
-        }
-      }
-      if (ghost_next_pos)
-      {
-        int r1 = lap_msec & ((1 << REPLAY_SPAN_SHIFT) - 1);
-        int r0 = (1 << REPLAY_SPAN_SHIFT) - r1;
-        ghostcar_x = (ghost_prev_pos->x * r0 + ghost_next_pos->x * r1) >> (REPLAY_SPAN_SHIFT - 8);
-        ghostcar_y = (ghost_prev_pos->y * r0 + ghost_next_pos->y * r1) >> (REPLAY_SPAN_SHIFT - 8);
-      }
-      else
-      {
-        ghostcar_x = INT32_MIN;
-        ghostcar_y = INT32_MIN;
-      }
-#endif
+    if (car[deviceId].msec_lapstart)
+    {
+      uint32_t lap_msec = (msec - car[deviceId].msec_lapstart);
       if (lap_msec >= 5000)
       {
         lap_msec /= 10;
@@ -2117,167 +2435,91 @@ void gameTask(void*)
         //*/
       }
     }
+#endif
 
-    player_yaw += player_steering_angle;
-    player_yaw = ((player_yaw * 16) + 8) / 17;
-    player_f = ((player_f16 += player_yaw) >> 16) & 1023;
-
-    auto rcos = icos(player_f);
-    auto rsin = isin(player_f);
-    static uint32_t prev_texture_id = 0;
-
-    size_t next_x = (player_x + player_add_x);
-    size_t tmp_x = next_x >> 16;
-    size_t next_y = (player_y + player_add_y);
-    size_t tmp_y = next_y >> 16;
-
-    uint32_t texture_id = texture_id_t::outside;
-    if ((tmp_x | tmp_y) < 256)
+    static uint32_t prev_sec = 0;
+    static uint32_t fps = 0;
+    uint32_t lap_msec = (msec - car[deviceId].msec_lapstart);
+    lap_msec /= 10;
+    uint32_t lap_sec = lap_msec / 100;
+    if (prev_sec != lap_sec)
     {
-      texture_id = sp_map.readPixelValue(tmp_x, tmp_y);
+        prev_sec = lap_sec;
+        fps = fpsCounter;
+        fpsCounter = 0;
     }
+#if 0
+    snprintf(lap_str, sizeof(lap_str), "%c%d,%d %u/%u %u",
+             deviceId == 0 ? '*' : ' ',
+             car[0].x >> 16, car[0].y >> 16,
+             kcom.sequence(), kcom.ack(),
+             fps);
+    snprintf(best_lap_str, sizeof(best_lap_str), "%c%d,%d %zu",
+             deviceId == 1 ? '*' : ' ',
+             car[1].x >> 16, car[1].y >> 16,
+             kcom.numOfData());
+#else
+    snprintf(lap_str, sizeof(lap_str), "%c%d,%d %u %zu",
+             deviceId == 0 ? '*' : ' ',
+             car[0].x >> 16, car[0].y >> 16,
+             frameCount,
+             deviceId == 0 ? kcom.numOfSendData() : kcom.numOfRecvData());
+    snprintf(best_lap_str, sizeof(best_lap_str), "%c%d,%d %u %zu",
+             deviceId == 1 ? '*' : ' ',
+             car[1].x >> 16, car[1].y >> 16,
+             frameCount,
+             deviceId != 0 ? kcom.numOfSendData() : kcom.numOfRecvData());
+#endif
 
-    int add_x = (player_add_x >> 3);
-    int add_y = (player_add_y >> 3);
-    int speed = ((add_x * add_x) + (add_y * add_y)) >> 16;
-    float tacho = speed / 4.0f;
-    player_speed = (player_speed * 2 + (speed / 2.2f)) / 4;
-    if (tacho < 20.0f) { tacho = 20.0f; }
+    M5_LOGI(">>>> Send:%u %d", frameCount, player_steering_angle);
+    kcom.sendSteer(deviceId, player_steering_angle);
+    
+    static uint32_t comCount{};
+
+    // 受信データがあれば、 ACK まで自分と相手を更新する
+    if(Communicator::numOfPeer())
+    {
+      if(kcom.numOfRecvData())
+      {
+        auto ack = kcom.ack();
+        M5_LOGW("Update %u/%u [%u:%u]", frameCount, ++comCount, kcom.sequence(), ack);
+        kcom.take();      
+        auto& rd = kcom.recvData();
+        auto& sd = kcom.sendData();
+
+        for(auto& k : rd)
+        {
+          if(k.seq > ack) { break; }
+          car[deviceId ^ 1].update(k.steering_angle, msec, false);
+          M5_LOGW("[R]%u:(%u/%u):%d", car[deviceId ^ 1].updateCount, k.seq, k.ack, k.steering_angle);
+        }
+        for(auto& k : sd)
+        {
+          if(k.seq > ack) { break; }
+          car[deviceId].update(k.steering_angle, msec, true);
+          M5_LOGW("[S]%u:(%u/%u):%d", car[deviceId].updateCount, k.seq, k.ack, k.steering_angle);          
+        }
+        kcom.clear(ack); // 使用したデータは削除
+        kcom.give();
+      }
+    }
+    // Standalone
     else
     {
-      while (tacho > 100.0f)
-      {
-        tacho = tacho * 0.73f;
-      }
+      car[0].update(player_steering_angle, msec, true);
     }
-    player_tacho = (player_tacho * 3 + tacho * 2.2f) / 4;
+    M5_LOGI("%6d:[0]:%d,%d [1]:%d,%d", frameCount, car[0].x >> 16, car[0].y >> 16, car[1].x >> 16, car[1].y >> 16);
 
-#if defined (__M5UNIFIED_HPP__) && ( SOUND_VOLUME > 0 )
-    //if ((input_count & 3) == 0)
-    {
-      int32_t drifted_f = (int32_t)(atan2f(add_y, add_x) * 512 / M_PI) & 0x3FF;
-
-      //printf("rad:%04d  %04d  %04d\r\n", drifted_f, player_f, diff);
-      M5.Speaker.tone(player_tacho / 2, 128, 0, true, wav_engine, sizeof(wav_engine));
-
-      uint32_t diff = (drifted_f > player_f ? (drifted_f - player_f) : (player_f - drifted_f));
-      if (diff >= 512) { diff = 1024 - diff; }
-      int v = (speed * diff) >> 10;
-      if (v > 64) { v = 64; }
-      M5.Speaker.setChannelVolume(1, v);
-      M5.Speaker.tone(800 + (rand() & 63), 100, 1, true);
-    }
-#endif
-
-    int player_add_x_target = rcos;
-    int player_add_y_target = rsin;
-    //player_add_x_target >>= 3;
-    //player_add_y_target >>= 3;
-
-    bool course_out = (((texture_id & 0x1F) == texture_id_t::outside) // 壁抜け防止
-      || (texture_id == flag_1 && prev_texture_id == flag_2)); // 逆走防止
-    if (course_out)
-    {
-      player_x -= player_add_x;
-      player_y -= player_add_y;
-      player_add_x_target = 0;
-      player_add_y_target = 0;
-      player_add_x = 0;
-      player_add_y = 0;
-      next_x = player_x;
-      next_y = player_y;
-      texture_id = sp_map.readPixelValue(player_x >> 16, player_y >> 16);
-    }
-    player_x += (player_add_x + 3) >> 3; // 自機移動
-    player_y += (player_add_y + 3) >> 3; // 自機移動
-
-    if (course_out || (texture_id & 0x1F) > road_1)
-    { /// 縁石テクスチャ上に来た時、コースアウト判定のために現在地点の地面の色パレット番号を取得する;
-      auto texture = (uint8_t*)sp_texture[texture_id & 0x1F].getBuffer();
-      uint32_t tx = (texture_id & texture_id_t::lr_invert) ? ~next_x : next_x;
-      uint32_t ty = (texture_id & texture_id_t::ud_invert) ? ~next_y : next_y;
-      auto color = (texture_palette_id_t)texture[((tx >> 11) & 0x1F) + ((ty >> 6) & 0x3E0)];
-      bool outside = (bool)(color >= texture_palette_id_t::pal_outside_0) != (bool)(texture_id & texture_id_t::io_invert);
-      size_t shift = 0;
-      if (!course_out && (color & texture_palette_id_t::pal_red_0))
-      { // 縁石;
-        shift = 1;
-      }
-      else if (course_out || outside)
-      { // コース外;
-        shift = 2;
-        int right_out = 0;
-        int left_out = 0;
-        for (int i = 1; i < 4; ++i)
-        {
-          int right_x = player_x - (rsin * i);
-          int right_y = player_y + (rcos * i);
-          int right_texture_id = sp_map.readPixelValue(right_x >> 16, right_y >> 16) & 0x1F;
-          right_out = right_texture_id == texture_id_t::outside ? 2
-            : right_texture_id == texture_id_t::road_1 ? 0 : 1;
-
-          int left_x = player_x + (rsin * i);
-          int left_y = player_y - (rcos * i);
-          int left_texture_id = sp_map.readPixelValue(left_x >> 16, left_y >> 16) & 0x1F;
-          left_out = left_texture_id == texture_id_t::outside ? 2
-            : left_texture_id == texture_id_t::road_1 ? 0 : 1;
-          if (left_out != right_out) { break; }
-        }
-        if (right_out > left_out)
-        {
-          player_add_x_target += rsin;
-          player_add_y_target -= rcos;
-          player_f16 += (1024 - 2) << 16;
-        }
-        else if (right_out < left_out)
-        {
-          player_add_x_target -= rsin;
-          player_add_y_target += rcos;
-          player_f16 += 2 << 16;
-        }
-      }
-      if (shift)
-      {
-        player_add_x_target >>= shift;
-        player_add_y_target >>= shift;
-      }
-    }
-    //*/
-#if DRIFT_LEVEL == 0
-    player_add_x = player_add_x_target;
-    player_add_y = player_add_y_target;
-#else
-    player_add_x = player_add_x_target + (((player_add_x - player_add_x_target) << DRIFT_LEVEL) + (1 << (DRIFT_LEVEL - 1))) / ((1 << DRIFT_LEVEL) + 1);
-    player_add_y = player_add_y_target + (((player_add_y - player_add_y_target) << DRIFT_LEVEL) + (1 << (DRIFT_LEVEL - 1))) / ((1 << DRIFT_LEVEL) + 1);
-#endif
-    // player_add_x = player_add_x_target + (((player_add_x - player_add_x_target) << 5) + 16) / 33;
-    // player_add_y = player_add_y_target + (((player_add_y - player_add_y_target) << 5) + 16) / 33;
-    // player_add_x = player_add_x_target + (((player_add_x - player_add_x_target) << 4) + 8) / 17;
-    // player_add_y = player_add_y_target + (((player_add_y - player_add_y_target) << 4) + 8) / 17;
-
-    if (prev_texture_id == flag_1 && texture_id == flag_2)
-    { // 一周判定
-      int laptime = msec_lapstart ? msec - msec_lapstart : 0;
-
-      if (laptime > 1024)
-      {
-        msec_prev_lap = laptime;
-        //        strncpy(prev_lap_str, lap_str, sizeof(prev_lap_str));
-
-        if (msec_best_lap > msec_prev_lap)
-        {
-          msec_best_lap = msec_prev_lap;
-          strncpy(best_lap_str, lap_str, sizeof(best_lap_str));
-          //memcpy(record_replay, current_replay, sizeof(current_replay));
-        }
-      }
-      msec_lapstart = msec;
-      //memset(current_replay, 0, sizeof(current_replay));
-    }
-    prev_texture_id = texture_id;
-  }
+    #if 0
+    sleepUntil(lastTime + durationTime);
+    auto now = ESP32Clock::now();
+    auto delta = now - lastTime;
+    lastTime = now;
+    #endif
+  }//for(;;)
 }
 
+  
 void setupPingPongBuffer(LGFX_Device* gfx)
 {
     uint32_t div = 5; // original 3.
@@ -2640,10 +2882,15 @@ void setup(void)
   display.setBrightness(128);
 
   ccom.begin();
+  scom.begin();
+  kcom.begin();
+  lastTime = ESP32Clock::now();
 }
 
-bool drawCountdown(LGFX_Sprite* sp, time_t sec, int yoff)
+bool drawCountdown(LGFX_Sprite* sp, int sec, int yoff)
 {
+  if(sec < 0 || sec > 3) { return false; }
+  
   static long ms{};
   static time_t prev{11111};
   String str(sec);
@@ -2651,9 +2898,8 @@ bool drawCountdown(LGFX_Sprite* sp, time_t sec, int yoff)
 
   if(prev != sec)
   {
-    sec %= 10;
-    ms = lgfx::millis();
     prev = sec;
+    ms = lgfx::millis();
     cd_sprite.clear(0);
     cd_sprite.drawString(str, (sec == 0) ? 0 : 6, 0);
   }
@@ -2664,8 +2910,7 @@ bool drawCountdown(LGFX_Sprite* sp, time_t sec, int yoff)
                            display.width()/2 + scale/2,
                            display.height()/2 - yoff + scale/2,
                            0, scale, scale, 0);
-
-  return scale < 1.0f;
+  return scale < 1.0f && sec == 0;
 }
 
 void drawChooseConnection(LGFX_Device* gfx)
@@ -2680,6 +2925,7 @@ void drawWaiting(LGFX_Device* gfx)
 {
   gfx->setTextSize(1,2);
   gfx->setCursor(16, gfx->height()/2);
+  gfx->fillRect(16, gfx->height()/2, gfx->width() - 16, 8*2);
   gfx->printf("[%u] Waiing untili primary settings.", deviceId);
   gfx->setTextSize(1,1);
 }
@@ -2717,15 +2963,15 @@ void drawRacing(LGFX_Device* gfx)
 #endif
   lcd_width = gfx->width();
   lcd_height = gfx->height();
-  int f = player_f;
+  int f = car[deviceId].f;
   auto rcos = icos(f);
   auto rsin = isin(f);
   int dxx = rcos;
   int dxy = rsin;
   int dyx = -rsin << 1;
   int dyy = rcos << 1;
-  int cxx = player_x - dxx;
-  int cxy = player_y - dxy;
+  int cxx = car[deviceId].x - dxx;
+  int cxy = car[deviceId].y - dxy;
   int line_number = lcd_height >> 7;
   uint8_t* sp_map_buffer = (uint8_t*)sp_map.getBuffer();
 
@@ -2735,8 +2981,8 @@ void drawRacing(LGFX_Device* gfx)
   int ghost_xe = -1;
   int ghost_ys = 0;
   int ghost_ye = -1;
-  int ghost_x = ghostcar_x;
-  int ghost_y = ghostcar_y;
+  int ghost_x = car[deviceId ^ 1].x;
+  int ghost_y = car[deviceId ^ 1].y;
   if (ghost_x >= 0)
   {
     ghost_xs = (ghost_x - (ghost_size << 8)) >> 16;
@@ -2905,8 +3151,8 @@ void drawRacing(LGFX_Device* gfx)
       */
       sp_panel.pushSprite(sp, (lcd_width - sp_panel.width()) >> 1, sp->height() - sp_panel.height(), 0);
       float zoom = ((lcd_height * 5) >> 5) / 32.0f;
-      sp_needle.pushRotateZoom(sp, ((lcd_width - sp_panel.width()) >> 1) + ((lcd_height * 24) >> 7), ((lcd_height * 6) >> 5) + sp->height() - sp_panel.height(), 145 + player_speed, zoom, zoom, 0);
-      sp_needle.pushRotateZoom(sp, ((lcd_width - sp_panel.width()) >> 1) + ((lcd_height * 68) >> 7), ((lcd_height * 6) >> 5) + sp->height() - sp_panel.height(), 145 + player_tacho, zoom, zoom, 0);
+      sp_needle.pushRotateZoom(sp, ((lcd_width - sp_panel.width()) >> 1) + ((lcd_height * 24) >> 7), ((lcd_height * 6) >> 5) + sp->height() - sp_panel.height(), 145 + car[deviceId].speed, zoom, zoom, 0);
+      sp_needle.pushRotateZoom(sp, ((lcd_width - sp_panel.width()) >> 1) + ((lcd_height * 68) >> 7), ((lcd_height * 6) >> 5) + sp->height() - sp_panel.height(), 145 + car[deviceId].tacho, zoom, zoom, 0);
 
       sp_steering.pushRotateZoom(sp, lcd_width >> 1, std::max<int>(sp_steering.height() >> 1, sprite_height), player_steering_angle / 256.0f, 1.0f, 1.0f, 0);
       sp_steering.pushRotateZoom(sp, lcd_width >> 1, std::max<int>(sp_steering.height() >> 1, sprite_height), player_steering_angle / 256.0f, -1.0f, 1.0f, 0);
@@ -2924,7 +3170,7 @@ void drawRacing(LGFX_Device* gfx)
       //      sp->println(prev_lap_str);
       sp->println(best_lap_str);
 
-      sp_map.setPivot(player_x >> 16, player_y >> 16);
+      sp_map.setPivot(car[deviceId].x >> 16, car[deviceId].y >> 16);
       int px = sp->width() - (sprite_height >> 1);
       int py = sprite_height * 3 >> 2;
       sp->setClipRect(sp->width() - sprite_height, 0, sprite_height, sprite_height);
@@ -2934,15 +3180,8 @@ void drawRacing(LGFX_Device* gfx)
       sp->clearClipRect();
     }
 
-    // count dowm
-    if(startTime)
-    {
-      auto s = startTime - std::time(nullptr);
-      if(s >= 0 && s <= 3)
-      {
-          if(drawCountdown(sp, s, y) && s == 0) { startTime = 0; }
-      }
-    }
+    if(drawCountdown(sp, countDown, y)) { countDown = -1; }
+
     sprites[flip].pushSprite(gfx, 0, y);
   }
 }
@@ -2950,6 +3189,7 @@ void drawRacing(LGFX_Device* gfx)
 void loop(void)
 {
   ++fpsCounter;
+  ++frameCount;
 #if defined ( SDL_h_ )
   lgfx::delay(10);
 #endif

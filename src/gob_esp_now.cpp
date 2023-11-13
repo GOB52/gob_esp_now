@@ -15,16 +15,11 @@
 #include <esp_log.h>
 #include <ctime>
 #include <cstdio>
+#include <FreeRTOS/FreeRTOS.h>
+#include <freeRTOS/semphr.h>
 #if !defined(NDEBUG)
 #include <esp_random.h>
 #endif
-
-// Logging
-#define LIB_LOGE(fmt, ...) ESP_LOGE(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGW(fmt, ...) ESP_LOGW(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGI(fmt, ...) ESP_LOGI(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGD(fmt, ...) ESP_LOGD(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGV(fmt, ...) ESP_LOGV(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
 
 namespace
 {
@@ -63,37 +58,14 @@ const char* err2cstr(esp_err_t e)
 const char* err2cstr(esp_err_t) { return ""; }
 #endif
 
-struct Packet
-{
-    enum Type : uint8_t
-    {
-        None,
-        DeclarePrimary,
-        DeclareSecondary,
-        YourIdentifier,
-        SyncTime,
-        //
-        UserType,
 
-    };
-    static constexpr uint32_t HEADER = 0X304e4547; // "GEN0" [G]ob_[E]sp_[N]ow ver [0]
-
-    uint32_t header{HEADER};
-    uint8_t type{};
-    uint8_t reserved[3]{};
-    
-    explicit Packet(const Type t) : type(t) {}
-    explicit operator bool() const noexcept { return header == HEADER; }
-    bool     operator !()    const noexcept { return !static_cast<bool>(*this); }
-};
-
-struct IdentifierPacket : public Packet
+struct IdentifierPacket : public goblib::esp_now::Packet
 {
     IdentifierPacket(const uint8_t id) : Packet(Type::YourIdentifier), identifier(id) {}
     uint8_t identifier{};
 };
     
-struct SyncTimePacket : public Packet
+struct SyncTimePacket : public goblib::esp_now::Packet
 {
     SyncTimePacket(const time_t t) : Packet(Type::SyncTime), syncTime(t) {}
     time_t syncTime{};
@@ -102,6 +74,13 @@ struct SyncTimePacket : public Packet
 };
 //
 }
+
+// Logging
+#define LIB_LOGE(fmt, ...) ESP_LOGE(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+#define LIB_LOGW(fmt, ...) ESP_LOGW(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+#define LIB_LOGI(fmt, ...) ESP_LOGI(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+#define LIB_LOGD(fmt, ...) ESP_LOGD(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+#define LIB_LOGV(fmt, ...) ESP_LOGV(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
 
 namespace goblib { namespace esp_now {
 
@@ -163,8 +142,8 @@ bool Communicator::begin()
     if(it != _comm.end()) { return true; }
 
     // ESP-NOW initialize not yet?
-    esp_now_peer_num_t num{};
-    if(esp_now_get_peer_num(&num) == ESP_ERR_ESPNOW_NOT_INIT)
+    uint32_t ver{};
+    if(esp_now_get_version(&ver) == ESP_ERR_ESPNOW_NOT_INIT)
     {
         auto r = esp_now_init();
         if(r != ESP_OK)
@@ -288,7 +267,7 @@ bool Communicator::existsPeer(const MACAddress& addr)
 void Communicator::callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
     MACAddress addr(mac_addr);
-    LIB_LOGV("static sent to %s", addr.toString().c_str());
+    //LIB_LOGV("static sent to %s", addr.toString().c_str());
     for(auto& c : _comm) { c->onSent(addr, status); }
 }
 
@@ -297,7 +276,7 @@ void Communicator::callback_onReceive(const uint8_t *mac_addr, const uint8_t* da
     MACAddress addr(mac_addr);
     const Packet* p = (const Packet*)data;
 
-    LIB_LOGV("static receive from %s : [%s] %d", addr.toString().c_str(), (bool)*p ? "PKT" : "ICD", p->type);
+    //LIB_LOGV("static receive from %s : [%s] %d", addr.toString().c_str(), (bool)*p ? "PKT" : "ICD", p->type);
 
     if(*p)
     {
@@ -354,6 +333,11 @@ void ConnectingCommunicator::onReceive(const MACAddress& addr, const uint8_t* da
     {
     case Alignment::Primary:
         // Notification from secondary and registered it not yet.
+        if(_secandary.size() >= _maxPeer - 1)
+        {
+            LIB_LOGW("No more registrations. %s", addr.toString().c_str());
+            break;
+        }
         if(p->type == Packet::Type::DeclareSecondary && !existsPeer(addr))
         {
             if(registerPeer(addr))
@@ -460,5 +444,52 @@ void SynchronousCommunicator::onSent(const MACAddress& addr, esp_now_send_status
     LIB_LOGV("sent:%d", status);
 }
 
+////
+#if 0
+struct RUDPPacket
+{
+    uint16_t sequence{};
+    uint16_t ack{};
+    uint8_t length{};
+    uint8_t deviceId{};
+    uint8_t payload[1];
+};
+
+
+
+bool RUDPCommunicator::sendAck(int deviceId, const void* data, uint8_t length)
+{
+    uint8_t* buf = malloc(sizeof(RUDPPacket) + length);
+    if(buf)
+    {
+        RUDPPacket* p = (RUDPPacket*)buf;
+        *p = RUDOPacket{};
+        p->sequence = (++_sequence) & 0xffff;
+        p->length = length;
+        p->deviceId = deviceId;
+        std::memcpy(p->payload,data, length);
+        return send(buf, sizeof(buf));
+    }
+    LIB_LOGE("Out of memory");
+    return false;
+}
+
+void RUDPCommunicator::onReceive(const MACAddress& addr, const uint8_t* data, int length)
+{
+    uint8_t* p = malloc(length);
+    if(p)
+    {
+        std::memcpy(p, data, length);
+        RUDPPacket* rudp = (RUDPPacket*)p;
+        _rbuff.push_back(p);
+    }
+    else
+    {
+        LIB_LOGE("Out of memory");
+    }
+}
+#endif
+
 //
 }}
+
