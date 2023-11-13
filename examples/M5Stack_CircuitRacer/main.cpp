@@ -1471,7 +1471,7 @@ KeyComm kcom;
 static volatile int ghostcar_x; // ゴーストカー座標(ベストラップリプレイ);
 static volatile int ghostcar_y;
 static volatile uint32_t fpsCounter;
-static uint32_t frameCount{};
+static volatile uint32_t frameCount{};
 
 static uint32_t texture_palette_16x2x2[2][texture_palette_id_t::pal_max];
 
@@ -2401,6 +2401,7 @@ void gameTask(void*)
         kcom.assign(scom);
         scom.end();
         startTime = 0;
+        continue;
     }
 
     // Keystroke synchronous communication
@@ -2471,7 +2472,8 @@ void gameTask(void*)
              deviceId != 0 ? kcom.numOfSendData() : kcom.numOfRecvData());
 #endif
 
-    M5_LOGI(">>>> Send:%u %d", frameCount, player_steering_angle);
+    static uint32_t ack{};
+    M5_LOGI(">>>> Send:ACK:%u %d", ack, player_steering_angle);
     kcom.sendSteer(deviceId, player_steering_angle);
     
     static uint32_t comCount{};
@@ -2481,7 +2483,7 @@ void gameTask(void*)
     {
       if(kcom.numOfRecvData())
       {
-        auto ack = kcom.ack();
+        ack = kcom.ack();
         M5_LOGW("Update %u/%u [%u:%u]", frameCount, ++comCount, kcom.sequence(), ack);
         kcom.take();      
         auto& rd = kcom.recvData();
@@ -2508,9 +2510,9 @@ void gameTask(void*)
     {
       car[0].update(player_steering_angle, msec, true);
     }
-    M5_LOGI("%6d:[0]:%d,%d [1]:%d,%d", frameCount, car[0].x >> 16, car[0].y >> 16, car[1].x >> 16, car[1].y >> 16);
+    M5_LOGI("ACK:%d [0]:%d,%d [1]:%d,%d", ack, car[0].x, car[0].y, car[1].x, car[1].y);
 
-    #if 0
+    #if 1
     sleepUntil(lastTime + durationTime);
     auto now = ESP32Clock::now();
     auto delta = now - lastTime;
