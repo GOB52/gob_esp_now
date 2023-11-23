@@ -1,33 +1,21 @@
 /*!
   @file gob_esp_now.cpp
-  @brief ESP-NOW wrapper and utilities.
-
-  @mainpage gob_ESP-NOW
-  This library is wrapped with ESP-NOW.  
-  C++11 or later.
-  
-  @author GOB https://twitter.com/gob_52_gob
-
-  @copyright 2023 GOB
-  @copyright Licensed under the MIT license. See LICENSE file in the project root for full license information.
+  @brief ESP-NOW wrapper, helper and utilities.
 */
 #include <gob_esp_now.hpp>
 #include <esp_log.h>
 #include <ctime>
 #include <cstdio>
-#include <FreeRTOS/FreeRTOS.h>
-#include <freeRTOS/semphr.h>
+//#include <FreeRTOS/FreeRTOS.h>
+//#include <freeRTOS/semphr.h>
 #if !defined(NDEBUG)
 #include <esp_random.h>
 #endif
 
 namespace
 {
-PROGMEM const char myTag[] = "gob_esp_now";
-
 #if !defined(NDEBUG)
 PROGMEM const char err_ok[]        = "Succeed";
-
 PROGMEM const char err_unknown[]   = "Unknown";
 PROGMEM const char err_not_init[]  = "Not initialized."; 
 PROGMEM const char err_arg[]       = "Invalid argument";
@@ -37,7 +25,6 @@ PROGMEM const char err_not_found[] = "Peer is not found";
 PROGMEM const char err_internal[]  = "Internal error";
 PROGMEM const char err_exist[]     = "Peer has existed";
 PROGMEM const char err_if[]        = "Interface error";
-
 PROGMEM const char* errTable[] =
 {
     err_unknown,
@@ -57,52 +44,32 @@ const char* err2cstr(esp_err_t e)
 #else
 const char* err2cstr(esp_err_t) { return ""; }
 #endif
-
-
-struct IdentifierPacket : public goblib::esp_now::Packet
-{
-    IdentifierPacket(const uint8_t id) : Packet(Type::YourIdentifier), identifier(id) {}
-    uint8_t identifier{};
-};
-    
-struct SyncTimePacket : public goblib::esp_now::Packet
-{
-    SyncTimePacket(const time_t t) : Packet(Type::SyncTime), syncTime(t) {}
-    time_t syncTime{};
-    uint8_t extra[32]{};
-    uint8_t length{};
-};
 //
 }
 
 // Logging
-#define LIB_LOGE(fmt, ...) ESP_LOGE(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGW(fmt, ...) ESP_LOGW(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGI(fmt, ...) ESP_LOGI(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGD(fmt, ...) ESP_LOGD(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
-#define LIB_LOGV(fmt, ...) ESP_LOGV(myTag, "[%s:%d]" #fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+#define LIB_LOGE(fmt, ...) ESP_LOGE(LIB_TAG, "[%s:%d] %s " #fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define LIB_LOGW(fmt, ...) ESP_LOGW(LIB_TAG, "[%s:%d] %s " #fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define LIB_LOGI(fmt, ...) ESP_LOGI(LIB_TAG, "[%s:%d] %s " #fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define LIB_LOGD(fmt, ...) ESP_LOGD(LIB_TAG, "[%s:%d] %s " #fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define LIB_LOGV(fmt, ...) ESP_LOGV(LIB_TAG, "[%s:%d] %s " #fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
 
 namespace goblib { namespace esp_now {
 
 // -----------------------------------------------------------------------------
 // class MACAddress
-const MACAddress MACAddress::BROADCAST(0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
-
-/*!
-  @param mtype Type of address to be acquired
-  @retval true Success
-  @retval false Failed
- */
 bool MACAddress::get(const esp_mac_type_t mtype)
 {
+    _addr64 = 0;
     return esp_read_mac(_addr, mtype) == ESP_OK;
 }
 
 bool MACAddress::parse(const char* str)
 {
+    _addr64 = 0;
     int tmp[ESP_NOW_ETH_ALEN]{};
     auto res = sscanf(str ? str : "", "%x:%x:%x:%x:%x:%x", &tmp[0], &tmp[1], &tmp[2], &tmp[3], &tmp[4], &tmp[5]);
-    if(res == 6 && std::all_of(tmp, tmp + ESP_NOW_ETH_ALEN, [](const int v) { return v < 256; }))
+    if(res == ESP_NOW_ETH_ALEN && std::all_of(tmp, tmp + ESP_NOW_ETH_ALEN, [](const int v) { return v < 256; }))
     {
         *this = MACAddress(tmp, tmp + ESP_NOW_ETH_ALEN);
         return true;
@@ -121,98 +88,167 @@ String MACAddress::toString() const
 
 // -----------------------------------------------------------------------------
 // class Communicator
-std::vector<Communicator*> Communicator::_comm{};
-#if !defined(NDEBUG)
-int32_t Communicator::_lostPercent;
-#endif
-
-void Communicator::assign(const Communicator& c)
+Communicator& Communicator::instance()
 {
-    _align = c.alignment();
-    _addr = c.address();
+    // NOTE: In C++11 or later, initialization of static variables is guaranteed to be thread safe.
+    static Communicator instance;
+    return instance;
 }
 
-/*!
-  @note If ESP-NOW is not initialized, initialize it.
-*/
-bool Communicator::begin()
+Communicator:: Communicator()
 {
-    // Already?
-    auto it = std::find(_comm.begin(), _comm.end(), this);
-    if(it != _comm.end()) { return true; }
+    _sem = xSemaphoreCreateBinary();
+    xSemaphoreGive(_sem);
+    _addr.get(ESP_MAC_WIFI_STA);
+}
 
-    // ESP-NOW initialize not yet?
-    uint32_t ver{};
-    if(esp_now_get_version(&ver) == ESP_ERR_ESPNOW_NOT_INIT)
+bool Communicator::begin(const uint8_t app_id)
+{
+    lock_guard lock(_sem);
+    if(!_began)
     {
-        auto r = esp_now_init();
-        if(r != ESP_OK)
+        // ESP-NOW initialize not yet?
+        esp_now_peer_num_t num{};
+        if(esp_now_get_peer_num(&num) == ESP_ERR_ESPNOW_NOT_INIT)
         {
-            LIB_LOGE("Failed to init:%d [%s]", r, err2cstr(r));
-            return false;
+            LIB_LOGV("Initialize ESP-NOW");
+            auto r = esp_now_init();
+            if(r != ESP_OK)
+            {
+                LIB_LOGE("Failed to init:%d [%s]", r, err2cstr(r));
+                return false;
+            }
         }
-    }
 
-    // Set callback if first begin
-    if(_comm.empty())
-    {
-        LIB_LOGV("regsiter callback");
         if((esp_now_register_send_cb(callback_onSent) != ESP_OK)
            || (esp_now_register_recv_cb(callback_onReceive) != ESP_OK) )
         {
-            LIB_LOGE("Failed to register");
+            LIB_LOGE("Failed to register cb");
             esp_now_unregister_send_cb();
             esp_now_unregister_recv_cb();
             return false;
         }
+        _began = true;
     }
 
-    _comm.push_back(this);
+    _app_id = app_id;
+    _transceivers.clear();
+    _canSend = true;
+    _retry = 0;
+    _lastData.clear();
+    _queue.clear();
+
     return true;
 }
 
+
 void Communicator::end()
 {
-    auto it = std::remove(_comm.begin(), _comm.end(), this);
-    if(it != _comm.end()) { _comm.erase(it, _comm.end()); }
+    lock_guard lock(_sem);
+    _began = false;
+    _transceivers.clear();
+    _lastData.clear();
+    _queue.clear();
 
-    if(_comm.empty())
+    esp_now_unregister_send_cb();
+    esp_now_unregister_recv_cb();
+}
+
+void Communicator::update()
+{
+    lock_guard lock(_sem);
+
+    if(!_canSend) { LIB_LOGD("skip"); return; }
+
+    // TODO:回数によって切断する?
+    if(_retry)
     {
-        LIB_LOGV("unregsiter callback");
-        esp_now_unregister_send_cb();
-        esp_now_unregister_recv_cb();
+        LIB_LOGE("Send retry");
+        send(_lastDest, _lastData);
+        return;
     }
-    _align = Alignment::None;
-}
-                
-/*! @note send data to the peer whose MAC address matches peer_addr in the peer list */
-bool Communicator::send(const MACAddress& addr, const void* data, const uint8_t length)
-{
-    if(length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Too large data"); return false; }
-    if(!existsPeer(addr)) { LIB_LOGE("%s was not registered", addr.toString().c_str()); return false; }
 
-    //#if !defined(NDEBUG)
-    //    if(esp_random() % 100 < _lostPercent) { return true; }
-    //#endif
-    
-    // If peer_addr is not NULL, send data to the peer whose MAC address matches peer_addr
-    auto ret = esp_now_send(addr.data(), (const uint8_t*)data, length);
-    if(ret != ESP_OK) { LIB_LOGE("Failed to send:%d [%s]", ret, err2cstr(ret)); }
-    return ret == ESP_OK;
+    for(auto& it : _queue) // first:MACAddress second:vector
+    {
+        if(!it.second.empty())
+        {
+            send(it.first, it.second);
+            break;
+        }
+    }
 }
 
-/*! @note send data to all of the peers that are added to the peer list */
-bool Communicator::send(const void* data, const uint8_t length)
+// Must be call in lock.
+bool Communicator::send(const MACAddress& addr, std::vector<uint8_t>& vec)
 {
-    if(length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Too large data"); return false; }
-    //#if !defined(NDEBUG)
-    //    if(esp_random() % 100 < _lostPercent) { return true; }
-    //#endif
+    auto ret = esp_now_send(addr.data(), vec.data(), vec.size());
+    if(ret != ESP_OK) { LIB_LOGE("Failed to send %d:%s", ret, err2cstr(ret)); return false; }
 
-    // If peer_addr is NULL, send data to all of the peers that are added to the peer list
-    auto ret = esp_now_send(nullptr, (const uint8_t*)data, length);
-    if(ret != ESP_OK) { LIB_LOGE("Failed to send:%d [%s]", ret, err2cstr(ret)); }
-    return ret == ESP_OK;
+    ////
+    const uint8_t* p = vec.data();;
+    auto cnt = ((const Header*)p)->count;
+    p += sizeof(Header);
+    const Transceiver::Header* th = (const Transceiver::Header*)p;
+    p += sizeof(Transceiver::Header);
+    LIB_LOGD("[S]:%u %u sz:%u [%02x]", cnt, th->sequence, th->size, *p);
+
+    _lastDest = addr;
+    _lastData = std::move(vec);
+    assert(vec.empty() && "Not moved");
+
+    _canSend = !(ret == ESP_OK);
+    return (ret == ESP_OK);
+}
+
+bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
+{
+    lock_guard lock(_sem);
+
+    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
+    auto& md = _queue[addr]; // Create empty mapped_type if not exiets.
+    if(md.capacity() < ESP_NOW_MAX_DATA_LEN) { md.reserve(ESP_NOW_MAX_DATA_LEN); } // Expand memory of the vector.
+
+    // Modify header
+    if(md.empty())
+    {
+        Header h;
+        h.app_id = _app_id;
+        h.count = 0;
+        md.insert(md.end(), (uint8_t*)&h, (uint8_t*)&h + sizeof(h));
+    }
+
+    // Overflow
+    if(length + md.size() > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
+
+    // Append data
+    Header* header = (Header*)md.data();
+    ++header->count;
+    auto osz = md.size();
+    md.insert(md.end(), (uint8_t*)data, (uint8_t*)data + length);
+    assert(md.size() == osz + length && "Failed to insert");
+    LIB_LOGD("[CP]%u/%zu", header->count, md.size());
+
+    return true;
+}
+
+bool Communicator::registerTransceiver(Transceiver* t)
+{
+    lock_guard lock(_sem);
+    // Already registered?
+    auto it = std::find(_transceivers.begin(), _transceivers.end(), t);
+    if(it != _transceivers.end()) { return true; }
+
+    _transceivers.push_back(t);
+    return true;
+}
+
+bool Communicator::unregisterTransceiver(Transceiver* t)
+{
+    lock_guard lock(_sem);
+    auto it = std::remove(_transceivers.begin(), _transceivers.end(), t);
+    if(it == _transceivers.end()) { LIB_LOGE("Not found"); return false; }
+    _transceivers.erase(it, _transceivers.end());
+    return true;
 }
 
 bool Communicator::registerPeer(const MACAddress& addr, const uint8_t channel, const bool encrypt, const uint8_t* lmk)
@@ -245,13 +281,14 @@ void Communicator::unregisterPeer(const MACAddress& addr)
 void Communicator::clearPeer()
 {
     esp_now_peer_info_t info{};
-    esp_now_del_peer(MACAddress::BROADCAST.data());
+    esp_now_del_peer(BROADCAST.data());
     while(esp_now_fetch_peer(true, &info) == ESP_OK)
     {
         esp_now_del_peer(info.peer_addr);
     }
 }
 
+/*! @note return Total peer */
 int Communicator::numOfPeer()
 {
     esp_now_peer_num_t num{};
@@ -263,233 +300,202 @@ bool Communicator::existsPeer(const MACAddress& addr)
     esp_now_peer_info_t info{};
     return esp_now_get_peer(addr.data(), &info) == ESP_OK;
 }
-                   
+
+/*!
+  @fn callback_onSent
+*/
 void Communicator::callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
     MACAddress addr(mac_addr);
-    //LIB_LOGV("static sent to %s", addr.toString().c_str());
-    for(auto& c : _comm) { c->onSent(addr, status); }
+    //LIB_LOGV("static sent to %s %d", addr.toString().c_str(), status);
+    instance().onSent(addr, status);
+}
+
+void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t status)
+{
+    lock_guard lock(_sem);
+    if(status == ESP_NOW_SEND_SUCCESS)
+    {
+        _canSend = true;
+        _retry = 0;
+        //_queue[addr].clear();
+        _lastData.clear();
+    }
+    else
+    {
+        LIB_LOGE("Failed to sent");
+        ++_retry;
+    }
 }
 
 void Communicator::callback_onReceive(const uint8_t *mac_addr, const uint8_t* data, int length)
 {
     MACAddress addr(mac_addr);
-    const Packet* p = (const Packet*)data;
-
-    //LIB_LOGV("static receive from %s : [%s] %d", addr.toString().c_str(), (bool)*p ? "PKT" : "ICD", p->type);
-
-    if(*p)
-    {
-    //#if !defined(NDEBUG)
-    //    if(esp_random() % 100 < _lostPercent) { return; }}
-    //#endif
-        for(auto& c : _comm) { c->onReceive(addr, data,length); }
-    }
-    else
-    {
-        LIB_LOGW("Incorrect data?");
-    }
-}
-
-// -----------------------------------------------------------------------------
-// class Communicator
-/*! @warning Regsiter broadcast address */
-bool ConnectingCommunicator::begin()
-{
-    if(Communicator::begin())
-    {
-        return registerPeer(MACAddress::BROADCAST);
-    }
-    return false;
-}
-
-/*! @warning Unregsiter broadcast address */
-void ConnectingCommunicator::end()
-{
-    Communicator::end();
-    unregisterPeer(MACAddress::BROADCAST);
-}
-
-bool ConnectingCommunicator::declarePrimary()
-{
-    if(alignment() != Alignment::None) { return false; }
-
-    Packet pkt(Packet::Type::DeclarePrimary);
-    if(send(MACAddress::BROADCAST, pkt))
-    {
-        _align = Alignment::Primary;
-        _id = 0; // Primary is always zero.
-        return true;
-    }
-    return false;
-}
-
-void ConnectingCommunicator::onReceive(const MACAddress& addr, const uint8_t* data, int length)
-{
-    const Packet* p = (const Packet*)data;
-    const IdentifierPacket* ip = (const IdentifierPacket*)data;
-
-    switch(alignment())
-    {
-    case Alignment::Primary:
-        // Notification from secondary and registered it not yet.
-        if(_secandary.size() >= _maxPeer - 1)
-        {
-            LIB_LOGW("No more registrations. %s", addr.toString().c_str());
-            break;
-        }
-        if(p->type == Packet::Type::DeclareSecondary && !existsPeer(addr))
-        {
-            if(registerPeer(addr))
-            {
-                _secandary.push_back(addr);
-                LIB_LOGV("%s is my secondary", addr.toString().c_str());
-
-                IdentifierPacket pkt(_secandary.size());
-                LIB_LOGV("Send id:%u to %s", pkt.identifier, addr.toString().c_str());
-                if(!send(addr, pkt))
-                {
-                    LIB_LOGE("Failed to send id");
-                }
-            }
-            else
-            {
-                LIB_LOGE("Failed to add secondary");
-            }
-        }
-        break;
-    case Alignment::None:
-        // Notification from primary?:
-        if(p->type == Packet::Type::DeclarePrimary)
-        {
-            LIB_LOGV("From primary %s.", addr.toString().c_str());
-            _align = Alignment::Secondary;
-            if(registerPeer(addr))
-            {
-                _primary = addr;
-                // Notify the primary that I am a secondary.
-                Packet pkt(Packet::Type::DeclareSecondary);
-                if(!send(addr, pkt))
-                {
-                    LIB_LOGE("Failed to send ack");
-                }
-            }
-            else
-            {
-                LIB_LOGE("Failed to add primary");
-            }
-        }
-        break;
-    case Alignment::Secondary:
-        if(ip->type == Packet::Type::YourIdentifier)
-        {
-            _id = ip->identifier;
-            LIB_LOGV("Receive ID:%u", _id);
-        }
-        break;
-    }
-}
-
-void ConnectingCommunicator::onSent(const MACAddress& addr, esp_now_send_status_t status)
-{
-    LIB_LOGV("sent:%d", status);
-}
-
-// -----------------------------------------------------------------------------
-// class SynchronousCommunicator
-
-bool SynchronousCommunicator::sendSyncTime(const time_t t, const void* extra, const uint8_t length)
-{
-    if(!isPrimary()) { return false; }
+    LIB_LOGV("static receive from %s:%d", addr.toString().c_str(), length);
+    instance().onReceive(addr, data, length);
     
-    SyncTimePacket packet(t);
-    _syncTime = t;
-    if(numOfPeer() == 0) { return true; } // Standalone
-
-    if(extra)
-    {
-        auto len = length;
-        if(len > sizeof(packet.extra)) { len = sizeof(packet.extra); LIB_LOGW("The overflow will be cut"); }
-        std::memcpy(packet.extra, extra, len);
-        packet.length = len;
-    }
-
-    LIB_LOGV("syncTime:%ld extra:%u", t, length);
-    return send(packet);
 }
 
-bool SynchronousCommunicator::reachSyncTime() const
+void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)
 {
-    return _syncTime && std::time(nullptr) >= _syncTime;
-}
+    const Header* h = (const Header*)data;
+    if(h->signeture != SIGNETURE || h->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
 
-void SynchronousCommunicator::onReceive(const MACAddress& addr, const uint8_t* data, int length)
-{
-    const SyncTimePacket* p = (const SyncTimePacket*)data;
-
-    if(p->type == Packet::Type::SyncTime)
+    ////
+    data += sizeof(Header);
+    auto cnt = h->count;
+    LIB_LOGD("Rtc:%u", cnt);
+    
+    while(cnt--)
     {
-        LIB_LOGV("[R]syncTime:%ld", p->syncTime);
-        _syncTime = p->syncTime;
-        if(p->length)
+        auto th = (const Transceiver::Header*)data;
+        lock_guard lock(_sem);
+        for(auto& t : _transceivers)
         {
-            _extra.resize(p->length);
-            std::memcpy(_extra.data(), p->extra, p->length);
+            if(t->identifier() == th->tid)
+            {
+                t->onReceive(addr, th);
+                break;
+            }
         }
+        data += th->size;
     }
 }
 
-void SynchronousCommunicator::onSent(const MACAddress& addr, esp_now_send_status_t status)
+// -----------------------------------------------------------------------------
+// class Transceiver
+Transceiver::Transceiver(const uint8_t tid) : _tid(tid)
 {
-    LIB_LOGV("sent:%d", status);
+    _sem = xSemaphoreCreateBinary();
+    xSemaphoreGive(_sem);
 }
 
-////
+Transceiver::~Transceiver()
+{
+    vSemaphoreDelete(_sem);
+}
+
+bool Transceiver::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
+{
+    lock_guard lock(_sem);
+
+    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
+    uint8_t buf[sizeof(Header) + length]{};
+
+    // Header
+    Header* h = (Header*)buf;
+    h->tid = _tid;
+    h->size = sizeof(Header) + length;
+    h->sequence = ++_sequence & 0xFF;
+    h->ack = _ack[addr];
+
+    // Append payload
+    if(data && length) { std::memcpy(buf + sizeof(Header), data, length); }
+
+    return Communicator::instance().post(peer_addr, buf, sizeof(buf));
+}
+
+void Transceiver::onReceive(const MACAddress& addr, const Header* data)
+{
+    lock_guard lock(_sem);
+    uint64_t ack_h56 = _ack[addr] & 0xFFFFFFFFFFFFFF00;
+    uint8_t  ack_l8 =  _ack[addr] & 0x00000000000000FF;
+    if(data->sequence < ack_l8) { ack_h56 += 0x100; } // 8bit overflow?
+    _ack[addr] = ack_h56 | data->sequence;
+}
+
 #if 0
-struct RUDPPacket
+// -----------------------------------------------------------------------------
+// class HandshakeTransceiver
+bool HandshakeTransceiver::declarePrimary()
 {
-    uint16_t sequence{};
-    uint16_t ack{};
-    uint8_t length{};
-    uint8_t deviceId{};
-    uint8_t payload[1];
-};
+    if(!isIndecided()) { LIB_LOGE("The state has already been determined. %d", _id); return false; }
 
+    _validSecondary = 0;
+    _peer.clear();
+    _id = 0; // To be primary
+           
+    registerPeer(BROADCAST);
 
-
-bool RUDPCommunicator::sendAck(int deviceId, const void* data, uint8_t length)
-{
-    uint8_t* buf = malloc(sizeof(RUDPPacket) + length);
-    if(buf)
-    {
-        RUDPPacket* p = (RUDPPacket*)buf;
-        *p = RUDOPacket{};
-        p->sequence = (++_sequence) & 0xffff;
-        p->length = length;
-        p->deviceId = deviceId;
-        std::memcpy(p->payload,data, length);
-        return send(buf, sizeof(buf));
-    }
-    LIB_LOGE("Out of memory");
-    return false;
+    Payload payload;
+    payload.command = Command::DeclarePrimary;
+    payload.sesson = esp_random() % 0xFFFF;
+    return Communicator::instance().post(BROADCAST, payload);
 }
 
-void RUDPCommunicator::onReceive(const MACAddress& addr, const uint8_t* data, int length)
+bool HandshakeTransceiver::postCommand(const MACAddress& addr, const Command cmd)
 {
-    uint8_t* p = malloc(length);
-    if(p)
+    Payload payload;
+    pauload.command = cmd;
+    return Communicator::instance().post(addr, payload);
+}
+
+bool HandshakeTransceiver::acceptSecondary(const MACAddress& addr, const int8_t id)
+{
+    auto it = std::find(_secondary.begin(), secondary.end(), addr);
+    if(it != _secondary.end())
     {
-        std::memcpy(p, data, length);
-        RUDPPacket* rudp = (RUDPPacket*)p;
-        _rbuff.push_back(p);
+        LIB_LOGE("Already registered %s", addr.toString().c_str());
+        return false;
     }
-    else
+
+    _secondary.push_back(addr);
+
+    Payload payload;
+    pauload.command = Command::AcceptSecondary;
+    payload.id = _secondary.size();
+    
+    return Communicator::instance().post(addr, payload);
+}
+                   
+void HandshakeTransceiver::onReceive(const MACAddress& addr, const Header* h)
+{
+    assert(data);
+    if(length < sizeof(Payload)) { LIB_LOGE("invalid data: %d", length); return; }
+
+    const Payload* hp = (const Payload*)data;
+    switch(hp->command)
     {
-        LIB_LOGE("Out of memory");
+    case Command::DeclarePrimary: // From primary declared device
+        if(isIndecided())
+        {
+            _session = hp->session;
+            postCommand(addr, Command::RequestSecondary);
+        }
+        else {  LIB_LOGE("Command unacceptable:%u id:%d", hp->command(), _id); }
+g        break;
+    case Command::ApplySecondary: // From device responding to primary declaration
+        if(isPrimary())
+        {
+            if(addSecondary())
+            {
+                acceptSecondary(addr, _secondary.size());
+            }
+            else
+            {
+                LIB_LOGW("Reject apply secondary from %s", addr.toString().c_str());
+            }
+        }
+        else {  LIB_LOGE("Command unacceptable:%u id:%d", hp->command(), _id); }
+        break;
+    case Command::AcceptSecondary: // From primary
+        if(isIndecided())
+        {
+            _id = hp->id; // To be secondary
+            postCommand(addr, Command::AckAccept);
+        }
+        else {  LIB_LOGE("Command unacceptable:%u id:%d", hp->command(), _id); }
+        break;
+    case Command::AckAccept: // From accepted secondary
+        if(isPrimary())
+        {
+            // seq ack check...
+            _validSecondary |= (1ULL << hp->id);
+        }
+        else {  LIB_LOGE("Command unacceptable:%u id:%d", hp->command(), _id); }
+        break;
     }
 }
 #endif
-
 //
 }}
-

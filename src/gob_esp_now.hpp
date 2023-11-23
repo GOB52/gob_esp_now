@@ -1,6 +1,6 @@
 /*!
   @file gob_esp_now.hpp
-  @brief ESP-NOW wrapper and utilities.
+  @brief ESP-NOW wrapper, helper and utilities.
 
   @mainpage gob_esp_now
   This library is wrapped with ESP-NOW.  
@@ -18,15 +18,48 @@
 #include <initializer_list>
 #include <cstring> // std::memcpy
 #include <algorithm> // std::move
+#include <memory>
 #include <vector>
+#include <map>
+#include <FreeRTOS/freeRTOS.h>
+#include <FreeRTOS/semphr.h>
 #include <esp_now.h>
 #include <esp_mac.h>
 #include <WString.h>
 
-namespace goblib
+/*!
+  @namespace goblib
+  @brief Top level namespace of mine
+ */
+namespace goblib {
+
+/*!
+  @namespace esp_now
+  @brief For ESP-NOW
+ */
+namespace esp_now {
+//esp_fill_random
+
+constexpr const char LIB_TAG[] = "GEN"; //!< @brief Tag for logging
+
+/*!
+  @struct lock_guard
+  @brief Scoped semaphore locking
+ */
+struct lock_guard
 {
-namespace esp_now
-{
+    explicit lock_guard (SemaphoreHandle_t& s) : _sem(&s) { xSemaphoreTake(*_sem, portMAX_DELAY); }
+    ~lock_guard()                                         { xSemaphoreGive(*_sem); }
+
+    lock_guard() = delete;
+    lock_guard(const lock_guard&) = delete;
+    lock_guard(lock_guard&&) = delete;
+    lock_guard& operator=(const lock_guard&) = delete;
+    lock_guard& operator=(lock_guard&&) = delete;
+
+  private:
+    SemaphoreHandle_t* _sem{};
+};
 
 /*!
   @class MACAddress
@@ -36,8 +69,11 @@ class MACAddress
 {
   public:
     /// @name Constructor
+    /// @warning Be careful with endians
+    /// @warning 0x0000123456789abc => bc:9a:78:56:34:12 (little endian)
     /// @{
     constexpr MACAddress() {}
+    constexpr explicit MACAddress(const uint64_t addr) : _addr64(addr) {} 
     constexpr MACAddress(const uint8_t u0, const uint8_t u1, const uint8_t u2, const uint8_t u3, const uint8_t u4, const uint8_t u5) : _addr{u0, u1, u2, u3, u4, u5} {}
     template <class InputIter> MACAddress(InputIter first, InputIter last)
     {
@@ -45,39 +81,41 @@ class MACAddress
         uint8_t* ptr{_addr};
         while(first != last) { *ptr++ = *first++; }
     }
-    MACAddress(std::initializer_list<uint8_t> il) : MACAddress(il.begin(), il.end()) {}
-    explicit MACAddress(const uint8_t* addr) { std::memcpy(_addr, addr, sizeof(_addr)); }
-    explicit MACAddress(const char* str) { parse(str); }
-    MACAddress(const MACAddress& x) { std::memcpy(_addr, x._addr, sizeof(_addr)); }
-    MACAddress(MACAddress&& x)      { std::memcpy(_addr, x._addr, sizeof(_addr)); }
+    explicit MACAddress(std::initializer_list<uint8_t> il) : MACAddress(il.begin(), il.end()) {}
+    explicit MACAddress(const uint8_t* addr) { assert(addr && "nullptr"); std::memcpy(_addr, addr, sizeof(_addr)); }
+    explicit MACAddress(const char* str) { assert(str && "nullptr"); parse(str); }
+    MACAddress(const MACAddress& x) { _addr64 = x._addr64; }
+    MACAddress(MACAddress&& x)      { _addr64 = x._addr64; x._addr64 = 0; }
     /// @}
 
+    /// @name Cast
+    /// @{
+    explicit inline operator uint64_t() const noexcept { return _addr64; } //!< @brief to uint64_t
+    /// @}
+    
     ///@name Assignment
     ///@{
     MACAddress& operator=(const MACAddress& x)
     {
-        if(this != &x) { std::memcpy(_addr, x._addr, sizeof(_addr)); }
+        if(this != &x) { _addr64 = x._addr64; }
         return *this;
     }
     MACAddress& operator=(MACAddress&& x)
     {
-        if(this != &x) { std::memcpy(_addr, x._addr, sizeof(_addr)); }
+        if(this != &x) { _addr64 = x._addr64; x._addr64 = 0; }
         return *this;
     }
     ///@}
-        
-    friend bool operator==(const MACAddress& a, const MACAddress& b);
-    friend bool operator!=(const MACAddress& a, const MACAddress& b);
 
     /// @name Properties
     /// @{
-    inline uint32_t OUI() const { return ((uint32_t)_addr[0] << 16) | ((uint32_t)_addr[1] << 8) | ((uint32_t)_addr[2]); }  //!< @brief Gets the Organisationally Unique Identifier
-    inline uint32_t NIC() const { return ((uint32_t)_addr[3] << 16) | ((uint32_t)_addr[4] << 8) | ((uint32_t)_addr[5]); }  //!< @brief Gets the Network Interface Controller
-    inline bool isUnicast()   const { return !isMulticast();     } //!< @brief Unicast address?
-    inline bool isMulticast() const { return _addr[0] & 0x01;    } //!< @brief Multicast address?
-    inline bool isBroadcast() const { return *this == BROADCAST; } //!< @brief Broadcast address?
-    inline bool isLocal()     const { return _addr[0] & 0x02;    } //!< @brief Locally administered?
-    inline bool isUniversal() const { return !isLocal();         } //!< @brief Universally administered?
+    inline constexpr uint32_t OUI() const { return ((uint32_t)_addr[0] << 16) | ((uint32_t)_addr[1] << 8) | ((uint32_t)_addr[2]); }  //!< @brief Gets the Organisationally Unique Identifier
+    inline constexpr uint32_t NIC() const { return ((uint32_t)_addr[3] << 16) | ((uint32_t)_addr[4] << 8) | ((uint32_t)_addr[5]); }  //!< @brief Gets the Network Interface Controller
+    inline constexpr bool isUnicast()   const { return !isMulticast();     } //!< @brief Unicast address?
+    inline constexpr bool isMulticast() const { return _addr[0] & 0x01;    } //!< @brief Multicast address?
+    inline constexpr bool isBroadcast() const { return _addr64 == 0xFFFFFFFFFFFF; } //!< @brief Broadcast address?
+    inline constexpr bool isLocal()     const { return _addr[0] & 0x02;    } //!< @brief Locally administered?
+    inline constexpr bool isUniversal() const { return !isLocal();         } //!< @brief Universally administered?
     /// @}
     
     /// @name Element access 
@@ -89,110 +127,143 @@ class MACAddress
     //! @brief access specified element 
     inline uint8_t        operator[](size_t i) const&& { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return std::move(_addr[i]); }
     //! @brief direct access to the underlying array 
-    inline const uint8_t* data() const { return _addr; }
+    inline constexpr const uint8_t* data() const { return _addr; }
     //! @brief direct access to the underlying array 
     inline uint8_t* data() { return const_cast<uint8_t*>(data()); }
     /// @}
 
-    //! @brief Obtain an address of the specified type
-    bool get(const esp_mac_type_t mtype); 
+    /*!
+      @brief Obtain an address of the specified type
+      @param mtype Type of address to be acquired
+      @retval true Success
+      @retval false Failed
+      @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/misc_system_api.html
+    */
+    bool get(const esp_mac_type_t mtype);
     bool parse(const char* str); //!< @brief Obtains an instance from a text string such as "12:34:56:78:aB:Cd"
     String toString() const; //!< @brief Outputs as a String, such as "fe:dc:ba:98:76:54"
 
-    static const MACAddress BROADCAST; //!< @brief Broadcast address
+    /// @cond 0
+    friend bool operator==(const MACAddress& a, const MACAddress& b);
+    friend bool operator!=(const MACAddress& a, const MACAddress& b);
+    friend bool operator< (const MACAddress& a, const MACAddress& b);
+    /// @endcond
 
   private:
-    uint8_t _addr[ESP_NOW_ETH_ALEN]{};
-};
-
-/// @name Equality Compare
-/// @{
-inline bool operator==(const MACAddress& a, const MACAddress& b)
-{
-    return std::memcmp(a._addr, b._addr, sizeof(a._addr)) == 0;
-}
-inline bool operator!=(const MACAddress& a, const MACAddress& b) { return !(a == b); }
-/// @}
-
-struct Packet
-{
-    enum Type : uint8_t
+    union
     {
-        None,
-        DeclarePrimary,
-        DeclareSecondary,
-        YourIdentifier,
-        SyncTime,
-        //
-        UserType,
-
+        uint64_t _addr64{}; // Using higher 48 bits
+        uint8_t _addr[ESP_NOW_ETH_ALEN];
     };
-    static constexpr uint32_t HEADER = 0X304e4547; // "GEN0" [G]ob_[E]sp_[N]ow header version [0]
-
-    uint32_t header{HEADER};
-    uint8_t type{};
-    uint8_t reserved[3]{};
-    
-    explicit Packet(const Type t) : type(t) {}
-    inline explicit operator bool() const noexcept { return header == HEADER; }
-    inline bool     operator !()    const noexcept { return !static_cast<bool>(*this); }
 };
+
+///@name Compare
+///@{
+inline bool operator==(const MACAddress& a, const MACAddress& b) { return a._addr64 == b._addr64; }
+inline bool operator!=(const MACAddress& a, const MACAddress& b) { return !(a == b); }
+inline bool operator< (const MACAddress& a, const MACAddress& b)
+{
+    return std::tie(a._addr[0], a._addr[1], a._addr[2], a._addr[3], a._addr[4], a._addr[5]) <
+            std::tie(b._addr[0], b._addr[1], b._addr[2], b._addr[3], b._addr[4], b._addr[5]);
+}
+inline bool operator> (const MACAddress& a, const MACAddress& b) { return b < a;    }
+inline bool operator<=(const MACAddress& a, const MACAddress& b) { return !(a > b); }
+inline bool operator>=(const MACAddress& a, const MACAddress& b) { return !(a < b); }
+///@}
+
+/*!
+  @va BROADCAST
+  @brief Broadcast address
+ */
+constexpr MACAddress BROADCAST(0xFFFFFFFFFFFF);
+
+#if 0
+/*!
+  @struct RUDPHeader
+  @brief RUDP-like header
+ */
+struct RUDPHeader
+{
+    /*!
+      @enum Flag
+      @brief Flag bits of RUDP type
+      @warning Not everything is implemented according to RUDP specifications.
+      @warning It is only a RUDP imitation.
+     */
+    enum Flag : uint8_t
+    {
+        SYN = 0x80, //!< @brief Begin session
+        ACK = 0x40, //!< @brief Acknowledge
+        EAK = 0x20, //!< @brief Selective ACK
+        RST = 0x10, //!< @brief End session
+        NUL = 0x08, //!< @brief Heartbeat
+        CHK = 0x04, //!< @brief Calculate CRC include payload if on. Otherwise calclulate only header.
+        TCS = 0x02, //!< @brief Demand for resumption
+    };
+    using flag_t = std::underlying_type<Flag>::type;
+
+    //static constexpr uint32_t HEADER = 0X304e4547; // "GEN0" [G]ob_[E]sp_[N]ow header [0]
+    //    static constexpr uint32_t HEADER = 0X314e4547; // "GEN0" [G]ob_[E]sp_[N]ow header [1] as unreliable
+    //uint32_t header{HEADER}; //!< @brief Fixed header
+    flag_t flag{};             //!< @brief Type flag bits.
+    uint8_t channel{};       //!< @brief Channel No.
+    uint16_t session{};      //!< @brief Session ID
+    uint16_t sequence{};     //!< @brief Lower 16bits of sequence No.
+    uint16_t ack{};          //!< @brief Lower 16bits of ACK No.
+    //_crc{} with salt
+    uint8_t length{};        //!< @brief Size of the payload
+    uint8_t payload[1];      //!< @brief Head of the payload
+
+} __attribute__((__packed__));
+
+// Payload...
+struct Payload_SYN
+{
+    uint16_t session{};  // session id
+    uint16_t sequence{}; // sequence initial value.
+};
+#endif
+
+/*!
+  @enum Notify
+  @brief Notify type
+*/
+enum Notify : uint8_t
+{
+    Disconnect,  //!< @brief Peer disconnection
+};
+    
+
+class Transceiver;
 
 /*!
   @class Communicator
-  @brief Communicator class wrapping ESP-NOW
+  @brief Manage transceivers
+  @note Singleton
  */
 class Communicator
 {
   public:
-    /*!
-      @enum Alignment
-      @brief Communicator alignment.
-     */
-    enum class Alignment : uint8_t
-    {
-        None,      //!< @brief Unsettled state
-        Primary,   //!< @brief as Primary (Contoller as ESP-NOW)
-        Secondary, //!< @brief as Secondary (Slave as ESP-NOW)
-    };
-
-    /// @name Constructor
-    /// @{
-    Communicator() { _addr.get(ESP_MAC_WIFI_STA); }
-    virtual ~Communicator() { end(); }
-
-    /// @name Properties
-    /// @{
-    /*! @brief Gets the alignment */
-    inline Alignment alignment() const       { return _align; }
-    inline bool isPrimary() const            { return alignment() == Alignment::Primary; } //!< @brief Am I primary?
-    inline bool isSecondary() const          { return alignment() == Alignment::Secondary; } //!< Am I secondary?
-    inline const MACAddress& address() const { return _addr; } //!< @brief Gets the MAC address
-    /// @}
-
-    //! @brief Assign information from other communicator.
-    void assign(const Communicator& c);
-    //! @brief Begin communicator
-    virtual bool begin(); 
-    //! @brief End communicator
-    virtual void end();
-    static size_t numOfCommunicator() { return _comm.size(); }
+    static Communicator& instance();
     
-    /// @name Send
-    /// @{
+    ///@cond 0
+    Communicator(const Communicator&) = delete;
+    Communicator& operator=(const Communicator&) = delete;
+    /// @endcond
 
-    ///@brief Send data to a specific address.
-    bool send(const MACAddress& addr, const void* data, const uint8_t length);
-    //! @brief Send data to a specific address.
-    template <typename T> bool send(const MACAddress& addr, const T& data) { return send(addr, &data, sizeof(data)); }
-    //! @brief Send data to addresses in the peer list.
-    bool send(const void* data, const uint8_t length);
-    //! @brief Send data to addresses in the peer list.
-    template <typename T> bool send(const T& data) { return send(&data, sizeof(data)); }
-    /// @}
+    const MACAddress& address() const { return _addr; }
+    size_t numOfTransceivers() const { return _transceivers.size(); }
+
+    /*! @param app_id Unique value for each application */
+    bool begin(const uint8_t app_id);
+    void end();
+    void update();
+    
+    bool registerTransceiver(Transceiver* t);
+    bool unregisterTransceiver(Transceiver* t);
     
     /// @name Peer
-    /// @brief Peer registration status is global
+    /// @warning Peer status is global
     /// @{
     static bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register peer
     static void unregisterPeer(const MACAddress& addr); //!< @brief Unregister peer
@@ -201,114 +272,183 @@ class Communicator
     static bool existsPeer(const MACAddress& addr);     //!< @brief Exists peer?
     /// @}
 
-#if !defined(NDEBUG)
-    /// @name For debug
-    /// @{
-    static void setLostRate(int32_t percent) { _lostPercent = percent; }
-  private:
-    static int32_t _lostPercent;
-    /// @}
-#endif
+    /*!
+      @brief Post data
+      @param peer_addr MAC address (send all unicast peer if nullptr)
+      @param data Payload data if exists
+      @param length Payload size if exists
+      @retval true Succeed
+      @retval false Failed (overflow data length)
+      @note Only stores data, actual transmission is done by update()
+     */
+    bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
+
+  protected:
+    Communicator();
     
   protected:
-    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length) = 0;
-    virtual void onSent(const MACAddress& addr, esp_now_send_status_t status) = 0;
+    static constexpr uint16_t SIGNETURE = 0x454e; // "GE"
 
+    /*!
+      @struct Header
+      @brief Communicator data header
+     */
+    struct Header
+    {
+        uint16_t signeture{SIGNETURE}; //!< @brief  Signeture of the Communicator's data
+        uint8_t  version{};            //!< @brief  Version of the header
+        uint8_t  app_id{};             //!< @brief  Application-specific ID
+        uint8_t  count{};              //!< @brief  Number of transceiver data
+        uint8_t  reserved{};
+        // Transceiver data is lined up thereafter.
+    };
+
+    ///@name Callback
+    ///@note Called from WiFi-task.
+    ///@note [Send] Too short interval between sending two ESP-NOW data may lead to disorder of sending callback function.
+    /// So, it is recommended that sending the next ESP-NOW data after the sending callback function of the previous sending has returned.
+    ///@note [Recv] The receiving callback function also runs from the Wi-Fi task. So, do not do lengthy operations in the callback function.
+    /// Instead, post the necessary data to a queue and handle it from a lower priority task.
+    /// @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html#send-esp-now-data
+    ///@{
     static void callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+    void onSent(const MACAddress& addr, const esp_now_send_status_t status);
     static void callback_onReceive(const uint8_t *mac_addr, const uint8_t* data, int length);
-    
-    Alignment _align{Alignment::None};
-    uint8_t _channel{};
-    MACAddress _addr{}; // self address
+    void onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length);
+    ///@}
 
+    bool send(const MACAddress& addr, std::vector<uint8_t>& vec);
+    
   private:
-    static std::vector<Communicator*> _comm;
+    mutable SemaphoreHandle_t _sem{}; // Binary semaphore
+
+    uint8_t _app_id{};// Application-specific ID
+    bool _began{};
+    volatile bool _canSend{};
+    volatile uint8_t _retry{};
+
+    MACAddress _addr{}; // Self address
+    std::vector<Transceiver*> _transceivers;
+
+    MACAddress _lastDest{};
+    std::vector<uint8_t> _lastData{};
+    std::map<MACAddress, std::vector<uint8_t>> _queue;
 };
 
-/*!
-  @class ConnectingCommunicator
-  @brief Class to establish a connection at the primary or secondary
- */
-class ConnectingCommunicator : public Communicator
-{
-  public:
-    explicit ConnectingCommunicator(const uint8_t maxPeer = 2) : Communicator(), _maxPeer(maxPeer) { assert(_maxPeer >= 2 && "max peeer is too small"); }
-    virtual ~ConnectingCommunicator() {}
-
-    const MACAddress& primaryAddress() const { return isPrimary() ? address() : _primary; }
-    const std::vector<MACAddress>& secondaryAddress() const { return _secandary; }
-    uint8_t numOfSecondary() const { return _secandary.size(); }
-    bool validIdentifier() const { return _id != INVALID_ID; }
-    uint8_t identifier() const { return _id; }
-    
-    virtual bool begin() override;
-    virtual void end() override;
-    
-    //! @brief Declares itself as primary
-    bool declarePrimary();
-    
-  protected:
-    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length) override;
-    virtual void onSent(const MACAddress& addr, esp_now_send_status_t status) override;
-
-    MACAddress _primary{};
-    std::vector<MACAddress> _secandary{};
-    static constexpr uint8_t INVALID_ID = 0xff;
-    uint8_t _id{INVALID_ID};
-    uint8_t _maxPeer{};
-};
 
 /*!
-  @class SynchronousCommunicator
-  @brief Claas to synchronous.
+   @class Transceiver
+   @brief Send and receive each.
 */
-class SynchronousCommunicator: public Communicator
+class Transceiver
 {
   public:
-    SynchronousCommunicator() : Communicator() {}
+    /*!
+      @struct Header
+      @brief Common Transceiver header
+     */
+    struct Header
+    {
+        uint8_t  tid{};      //!< @brief Transerver id
+        uint8_t  size{};     //!< @brief  Data size including this header
+        uint8_t  sequence{}; //!< @brief  Lower 8bit of sequence
+        uint8_t  ack{};      //!< @brief  Lower 8bit of ack
+        // uint8_t __payload[size - sizeof(Header)];
+        inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
+    };
 
-    /// @name Properties
-    /// @{
-    time_t syncTime() const { return _syncTime; } //!< @brief estimated time of synchronization
-    bool hasExtra() const { return !_extra.empty(); }
-    const void* extra() const { return _extra.data(); }
-    /// @}
+    /*! @param tid Unique value for each transceiver */
+    explicit Transceiver(const uint8_t tid);
+    virtual ~Transceiver();
 
-    /*! @brief Send scheduled synchronization time
-      @warning Only the primary can run */
-    bool sendSyncTime(const time_t t, const void* extra = nullptr, const uint8_t length = 0);
-    //! @brief Has the scheduled synchronization time been reached?
-    bool reachSyncTime() const;
+    //! @cond 0
+    Transceiver(const Transceiver&) = delete;
+    Transceiver& operator=(const Transceiver&) = delete;
+    //! @endcond
+
+    int8_t identifier() const { return _tid; }
+    inline uint64_t sequence() const { lock_guard _(_sem);  return _sequence; }
+    inline uint64_t ack(const MACAddress& addr) const { lock_guard _(_sem); return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; }
+    inline bool enabled() const { return _enable; }
     
-  protected:    
-    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length) override;
-    virtual void onSent(const MACAddress& addr, esp_now_send_status_t status) override;
+    inline void enable(const bool b) { _enable = b; }
+    inline void enable() { enable(true); }
+    inline void disable() { enable(false); }
+
+    bool post(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    inline bool post(                   const void* data = nullptr, const uint8_t length = 0) { return post(nullptr, data, length); }
+    template<typename T> inline bool post(const MACAddress& addr, const T& data) { return post(addr.data(), &data ,sizeof(data)); }
+    template<typename T> inline bool post(                        const T& data) { return post(nullptr,     &data ,sizeof(data)); }
+
+
+    //! @brief Call any function with lock.
+    template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
+            -> decltype(func(std::forward<Args>(args)...))
+    {
+        lock_guard lock(_sem);
+        return func(std::forward<Args>(args)...);
+    }
+
+    
+    virtual void onNotify(const Notify, void* arg = nullptr){}
+    /*! @warning Parent class function call required if overrided */
+    virtual void onReceive(const MACAddress& addr, const Header* data);
 
   private:
-    time_t _syncTime{};
-    std::vector<uint8_t> _extra;
+    mutable SemaphoreHandle_t _sem{}; // Binary semaphore
+    uint8_t _tid{}; //!< Transceiver unique identifier
+    bool _enable{false};
+    uint64_t _sequence{}; // send sequence
+    std::map<MACAddress, uint64_t> _ack; // received sequence
 };
 
 #if 0
-class RUDPCommunicator : public Communicator
+class HandshakeTransceiver : public Transceiver
 {
   public:
-    RUDPCommunicator() : Communicator() {}
+    explicit HandshakeTransceiver(const uint8_t tid, const uint8_t maxPeer = 1) : Transceiver(tid), _maxPeer(maxPeer) { assert(maxPeer < ESP_NOW_MAX_TOTAL_PEER_NUM); }
 
+    inline bool isPrimary()    const { return _id == 0; }
+    inline bool isSecondary()  const { return _id > 0;  }
+    inline bool isIndecided()  const { return _id < 0;  }
 
-    uint64_t lastACK() const;
-    uint64_t sequenceNo() const;
-    bool ready() const { return sequenceNo <= lastACK; }
-    bool sendAck(int deviceId, const void* data, uint8_t length);
-
+    inline int8_t identifier() const { return _id;      }
+#if 0
+    const MACAddress primaryAddress() const
+    {
+        return isPrimary() ? Communicator::instance().address()
+                : (isSecondary() ? _peer.front() : MACAddress());
+    }
+    size_t numOfSecondary() { return isSecondary() ? _peer.size() : 0; }
+    const std::vector<MACAddress>* secondaryAddress() const { return isPrimary() ? &_peer : nullptr; }
+#endif
     
-  protected:    
-    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length) override;
-    virtual void onSent(const MACAddress& addr, esp_now_send_status_t status) override;
-
+    enum Command : uint8_t
+    {
+        DeclarePrimary,
+        ApplySecondary,
+        AcceptSecondary,
+        AckAccept,
+    };
+    struct Payload
+    {
+        Command command{};
+        uint16_t session{};
+        int8_t id{};
+    };
+    bool declarePrimary();
+    
+  protected:
+    bool postCommand(const MACAddress& addr);
+    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length);
+    
   private:
-    uint64_t _sequence{}, _sequenceAck{}
-    std::vector<uint8_t*> _rbuff;
+    static constexpr int8_t INVALID_ID = -1;
+    int8_t _id{INVALID_ID}; // 0 as primary, 1~ as secondary negative: inundecided
+    uint8_t _maxPeer{};
+    uint16_t _session{};
+    uint32_t _validSecondary{}; // bits (
+    std::vector<MACAddress> _peer{}; // [0]:primary [1]:others
 };
 #endif
 
