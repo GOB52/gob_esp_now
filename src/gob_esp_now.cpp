@@ -105,38 +105,36 @@ Communicator:: Communicator()
 bool Communicator::begin(const uint8_t app_id)
 {
     lock_guard lock(_sem);
-    if(!_began)
-    {
-        // ESP-NOW initialize not yet?
-        esp_now_peer_num_t num{};
-        if(esp_now_get_peer_num(&num) == ESP_ERR_ESPNOW_NOT_INIT)
-        {
-            LIB_LOGV("Initialize ESP-NOW");
-            auto r = esp_now_init();
-            if(r != ESP_OK)
-            {
-                LIB_LOGE("Failed to init:%d [%s]", r, err2cstr(r));
-                return false;
-            }
-        }
+    if(_began) { return true; }
 
-        if((esp_now_register_send_cb(callback_onSent) != ESP_OK)
-           || (esp_now_register_recv_cb(callback_onReceive) != ESP_OK) )
+    // ESP-NOW initialize not yet?
+    esp_now_peer_num_t num{};
+    if(esp_now_get_peer_num(&num) == ESP_ERR_ESPNOW_NOT_INIT)
+    {
+        LIB_LOGV("Initialize ESP-NOW");
+        auto r = esp_now_init();
+        if(r != ESP_OK)
         {
-            LIB_LOGE("Failed to register cb");
-            esp_now_unregister_send_cb();
-            esp_now_unregister_recv_cb();
+            LIB_LOGE("Failed to init:%d [%s]", r, err2cstr(r));
             return false;
         }
-        _began = true;
+    }
+    if((esp_now_register_send_cb(callback_onSent) != ESP_OK)
+       || (esp_now_register_recv_cb(callback_onReceive) != ESP_OK) )
+    {
+        LIB_LOGE("Failed to register cb");
+        esp_now_unregister_send_cb();
+        esp_now_unregister_recv_cb();
+        return false;
     }
 
+    _began = true;
     _app_id = app_id;
     _transceivers.clear();
-    _canSend = true;
-    _retry = 0;
     _lastData.clear();
     _queue.clear();
+    _canSend = true;
+    _retry = 0;
 
     return true;
 }
@@ -145,20 +143,22 @@ bool Communicator::begin(const uint8_t app_id)
 void Communicator::end()
 {
     lock_guard lock(_sem);
-    _began = false;
-    _transceivers.clear();
-    _lastData.clear();
-    _queue.clear();
-
-    esp_now_unregister_send_cb();
-    esp_now_unregister_recv_cb();
+    if(_began)
+    {
+        _began = false;
+        _transceivers.clear();
+        _lastData.clear();
+        _queue.clear();
+        esp_now_unregister_send_cb();
+        esp_now_unregister_recv_cb();
+    }
 }
 
 void Communicator::update()
 {
     lock_guard lock(_sem);
 
-    if(!_canSend) { LIB_LOGD("skip"); return; }
+    if(!_began || !_canSend) { return; }
 
     // TODO:回数によって切断する?
     if(_retry)
@@ -288,7 +288,7 @@ void Communicator::clearPeer()
     }
 }
 
-/*! @note return Total peer */
+/*! @note return total peer */
 int Communicator::numOfPeer()
 {
     esp_now_peer_num_t num{};

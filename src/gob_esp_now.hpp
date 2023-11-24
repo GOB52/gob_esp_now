@@ -84,15 +84,11 @@ class MACAddress
     explicit MACAddress(std::initializer_list<uint8_t> il) : MACAddress(il.begin(), il.end()) {}
     explicit MACAddress(const uint8_t* addr) { assert(addr && "nullptr"); std::memcpy(_addr, addr, sizeof(_addr)); }
     explicit MACAddress(const char* str) { assert(str && "nullptr"); parse(str); }
+    explicit MACAddress(const esp_mac_type_t mt) { get(mt); }
     MACAddress(const MACAddress& x) { _addr64 = x._addr64; }
     MACAddress(MACAddress&& x)      { _addr64 = x._addr64; x._addr64 = 0; }
     /// @}
 
-    /// @name Cast
-    /// @{
-    explicit inline operator uint64_t() const noexcept { return _addr64; } //!< @brief to uint64_t
-    /// @}
-    
     ///@name Assignment
     ///@{
     MACAddress& operator=(const MACAddress& x)
@@ -107,6 +103,8 @@ class MACAddress
     }
     ///@}
 
+    explicit inline constexpr operator uint64_t() const noexcept { return _addr64; } //!< @brief Cast to uint64_t
+    
     /// @name Properties
     /// @{
     inline constexpr uint32_t OUI() const { return ((uint32_t)_addr[0] << 16) | ((uint32_t)_addr[1] << 8) | ((uint32_t)_addr[2]); }  //!< @brief Gets the Organisationally Unique Identifier
@@ -157,8 +155,6 @@ class MACAddress
     };
 };
 
-///@name Compare
-///@{
 inline bool operator==(const MACAddress& a, const MACAddress& b) { return a._addr64 == b._addr64; }
 inline bool operator!=(const MACAddress& a, const MACAddress& b) { return !(a == b); }
 inline bool operator< (const MACAddress& a, const MACAddress& b)
@@ -169,13 +165,8 @@ inline bool operator< (const MACAddress& a, const MACAddress& b)
 inline bool operator> (const MACAddress& a, const MACAddress& b) { return b < a;    }
 inline bool operator<=(const MACAddress& a, const MACAddress& b) { return !(a > b); }
 inline bool operator>=(const MACAddress& a, const MACAddress& b) { return !(a < b); }
-///@}
 
-/*!
-  @va BROADCAST
-  @brief Broadcast address
- */
-constexpr MACAddress BROADCAST(0xFFFFFFFFFFFF);
+constexpr MACAddress BROADCAST = MACAddress(0xFFFFFFFFFFFF); //!< @brief Broadcast address
 
 #if 0
 /*!
@@ -232,7 +223,6 @@ enum Notify : uint8_t
 {
     Disconnect,  //!< @brief Peer disconnection
 };
-    
 
 class Transceiver;
 
@@ -251,19 +241,27 @@ class Communicator
     Communicator& operator=(const Communicator&) = delete;
     /// @endcond
 
-    const MACAddress& address() const { return _addr; }
-    size_t numOfTransceivers() const { return _transceivers.size(); }
+    const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
 
-    /*! @param app_id Unique value for each application */
+    /*!
+      @brief Begin communication
+      @param app_id Unique value for each application
+    */
     bool begin(const uint8_t app_id);
     void end();
+    /*! @brief Update comminication
+      @note Transmission of posted data is done here
+     */
     void update();
-    
-    bool registerTransceiver(Transceiver* t);
-    bool unregisterTransceiver(Transceiver* t);
-    
+
+    ///@name Transceiver
+    ///@{
+    bool registerTransceiver(Transceiver* t); //!< @brief Register
+    bool unregisterTransceiver(Transceiver* t); //!< @brief Unregister
+    size_t numOfTransceivers() const { return _transceivers.size(); } //!< @brief Gets the number of registered transceivers
+    ///@}
+
     /// @name Peer
-    /// @warning Peer status is global
     /// @{
     static bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register peer
     static void unregisterPeer(const MACAddress& addr); //!< @brief Unregister peer
@@ -273,12 +271,10 @@ class Communicator
     /// @}
 
     /*!
-      @brief Post data
+      @brief Post transceiver data
       @param peer_addr MAC address (send all unicast peer if nullptr)
-      @param data Payload data if exists
-      @param length Payload size if exists
-      @retval true Succeed
-      @retval false Failed (overflow data length)
+      @param data Transceiver header and subsequent payload
+      @param length Length of tdata
       @note Only stores data, actual transmission is done by update()
      */
     bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
@@ -287,8 +283,9 @@ class Communicator
     Communicator();
     
   protected:
-    static constexpr uint16_t SIGNETURE = 0x454e; // "GE"
-
+    static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
+    static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
+    
     /*!
       @struct Header
       @brief Communicator data header
@@ -296,12 +293,12 @@ class Communicator
     struct Header
     {
         uint16_t signeture{SIGNETURE}; //!< @brief  Signeture of the Communicator's data
-        uint8_t  version{};            //!< @brief  Version of the header
+        uint8_t  version{VERSION};     //!< @brief  Version of the header
         uint8_t  app_id{};             //!< @brief  Application-specific ID
         uint8_t  count{};              //!< @brief  Number of transceiver data
         uint8_t  reserved{};
-        // Transceiver data is lined up thereafter.
-    };
+        // Transceiver data continues for count times.
+    };//6
 
     ///@name Callback
     ///@note Called from WiFi-task.
@@ -338,7 +335,8 @@ class Communicator
 
 /*!
    @class Transceiver
-   @brief Send and receive each.
+   @brief Post and receive data each.
+   @note Unique data exchange is done in derived classes. See also library examples.
 */
 class Transceiver
 {
@@ -353,35 +351,57 @@ class Transceiver
         uint8_t  size{};     //!< @brief  Data size including this header
         uint8_t  sequence{}; //!< @brief  Lower 8bit of sequence
         uint8_t  ack{};      //!< @brief  Lower 8bit of ack
-        // uint8_t __payload[size - sizeof(Header)];
+        // Payload continues if exists
         inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
-    };
+    };//4
 
     /*! @param tid Unique value for each transceiver */
     explicit Transceiver(const uint8_t tid);
     virtual ~Transceiver();
 
-    //! @cond 0
     Transceiver(const Transceiver&) = delete;
     Transceiver& operator=(const Transceiver&) = delete;
-    //! @endcond
 
-    int8_t identifier() const { return _tid; }
-    inline uint64_t sequence() const { lock_guard _(_sem);  return _sequence; }
-    inline uint64_t ack(const MACAddress& addr) const { lock_guard _(_sem); return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; }
-    inline bool enabled() const { return _enable; }
-    
-    inline void enable(const bool b) { _enable = b; }
-    inline void enable() { enable(true); }
-    inline void disable() { enable(false); }
+    ///@name Properties
+    ///@{
+    int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
+    inline uint64_t sequence() const { lock_guard _(_sem);  return _sequence; } //!< @brief Gets the sequence No.
+    inline uint64_t ack(const MACAddress& addr) const { lock_guard _(_sem); return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; } //!< @brief Gets the ack No
+    ///@}
 
+    ///@name Post
+    ///@{
+    /*!
+      @brief Post data
+      @param peer_addr Destination address. Post to all peer if nullptr
+      @param data Payload data if exists
+      @param length Length of the payload data if exists
+     */
     bool post(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    //! @brief Post to all peer
     inline bool post(                   const void* data = nullptr, const uint8_t length = 0) { return post(nullptr, data, length); }
+    //! @brief Post to destination
     template<typename T> inline bool post(const MACAddress& addr, const T& data) { return post(addr.data(), &data ,sizeof(data)); }
+    //! @brief Post to all peer
     template<typename T> inline bool post(                        const T& data) { return post(nullptr,     &data ,sizeof(data)); }
+    ///@}
 
-
-    //! @brief Call any function with lock.
+    /*!
+      @brief Call any function with lock
+      @param Func Any functor
+      @param args Arguments for functor
+      @code
+      class YourTransceiver : public Transceiver
+      {
+          //...Omission
+          int yourThreadSafeFunction(const int mul)
+          {
+              return with_lock([&](const int m) { return _need_thread_safe_value * m; }, mul);
+          }
+          volatile int need_thread_safe_value{};
+      };
+      @endcode
+     */
     template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
             -> decltype(func(std::forward<Args>(args)...))
     {
@@ -389,15 +409,13 @@ class Transceiver
         return func(std::forward<Args>(args)...);
     }
 
-    
     virtual void onNotify(const Notify, void* arg = nullptr){}
     /*! @warning Parent class function call required if overrided */
     virtual void onReceive(const MACAddress& addr, const Header* data);
 
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
-    uint8_t _tid{}; //!< Transceiver unique identifier
-    bool _enable{false};
+    uint8_t _tid{}; // Transceiver unique identifier
     uint64_t _sequence{}; // send sequence
     std::map<MACAddress, uint64_t> _ack; // received sequence
 };
