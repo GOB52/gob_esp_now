@@ -41,6 +41,8 @@ const char* err2cstr(esp_err_t e)
 {
     return (e == ESP_OK) ? err_ok : errTable[e - ESP_ERR_ESPNOW_BASE];
 }
+
+float randf() { return esp_random() / (float)UINT32_MAX; }
 #else
 const char* err2cstr(esp_err_t) { return ""; }
 #endif
@@ -163,7 +165,7 @@ void Communicator::update()
     // TODO:回数によって切断する?
     if(_retry)
     {
-        LIB_LOGE("Send retry");
+        LIB_LOGE("Retry:%s %zu", _lastDest.toString().c_str(), _lastData.size());
         send(_lastDest, _lastData);
         return;
     }
@@ -193,8 +195,7 @@ bool Communicator::send(const MACAddress& addr, std::vector<uint8_t>& vec)
     LIB_LOGD("[S]:%u %u sz:%u [%02x]", cnt, th->sequence, th->size, *p);
 
     _lastDest = addr;
-    _lastData = std::move(vec);
-    assert(vec.empty() && "Not moved");
+    if(&_lastData != &vec) { _lastData = std::move(vec); }
 
     _canSend = !(ret == ESP_OK);
     return (ret == ESP_OK);
@@ -314,11 +315,19 @@ void Communicator::callback_onSent(const uint8_t *mac_addr, esp_now_send_status_
 void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t status)
 {
     lock_guard lock(_sem);
+    _canSend = true;
+
+#if !defined(NDEBUG)
+    if(isEnableDebug() && randf() < _debugSendLoss)
+    {
+        LIB_LOGD("[D]:Lost send");
+        ++_retry;
+        return;
+    }
+#endif
     if(status == ESP_NOW_SEND_SUCCESS)
     {
-        _canSend = true;
         _retry = 0;
-        //_queue[addr].clear();
         _lastData.clear();
     }
     else
@@ -345,7 +354,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     data += sizeof(Header);
     auto cnt = h->count;
     LIB_LOGD("Rtc:%u", cnt);
-    
+
     while(cnt--)
     {
         auto th = (const Transceiver::Header*)data;
@@ -354,6 +363,13 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
         {
             if(t->identifier() == th->tid)
             {
+#if !defined(NDEBUG)
+                if(isEnableDebug() && randf() < _debugRecvLoss)
+                {
+                    LIB_LOGD("[D]:Lost recv tid:%u", t->identifier());
+                    continue;
+                }
+#endif
                 t->onReceive(addr, th);
                 break;
             }

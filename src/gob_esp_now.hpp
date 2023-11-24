@@ -279,6 +279,21 @@ class Communicator
      */
     bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
 
+#if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
+    ///@name Debugging features
+    ///@note Create a pseudo send/receive loss condition
+    ///@{
+    bool isEnableDebug() const     { return _debugEnable; } //!< @brief Are debugging features enabled?
+    void enableDebug(const bool b) { _debugEnable = b;    } //!< @brief Enable/Disable debugging features
+    float debugSendLoss() const    { return _debugSendLoss; } //!< @brief Gets the sending losee
+    float debugRecieveLoss() const { return _debugRecvLoss; } //!< @brief Gets the receiving losee
+    void setDebugSendLoss(const float rate)    { _debugSendLoss = rate; } //!< @brief Set sending loss
+    void setDebugReceiveLoss(const float rate) { _debugRecvLoss = rate; } //!< @brief Set receiving loss
+    void setDebugLoss(const float rate)        { _debugSendLoss = _debugRecvLoss = rate; } //!< @brief Set sending and receiving loss percentage
+    //Caused once in a specified number of times
+    ///@}
+#endif
+    
   protected:
     Communicator();
     
@@ -330,6 +345,11 @@ class Communicator
     MACAddress _lastDest{};
     std::vector<uint8_t> _lastData{};
     std::map<MACAddress, std::vector<uint8_t>> _queue;
+
+#if !defined(NDEBUG)
+    bool _debugEnable{};
+    float _debugSendLoss{}, _debugRecvLoss{};
+#endif
 };
 
 
