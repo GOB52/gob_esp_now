@@ -4,10 +4,9 @@
 */
 #include <gob_esp_now.hpp>
 #include <esp_log.h>
+#include <esp32-hal.h> // millis
 #include <ctime>
 #include <cstdio>
-//#include <FreeRTOS/FreeRTOS.h>
-//#include <freeRTOS/semphr.h>
 #if !defined(NDEBUG)
 #include <esp_random.h>
 #endif
@@ -42,7 +41,7 @@ const char* err2cstr(esp_err_t e)
     return (e == ESP_OK) ? err_ok : errTable[e - ESP_ERR_ESPNOW_BASE];
 }
 
-float randf() { return esp_random() / (float)UINT32_MAX; }
+float randf() { return esp_random() / (float)UINT32_MAX; } // [0.0, 1.0]
 #else
 const char* err2cstr(esp_err_t) { return ""; }
 #endif
@@ -136,7 +135,7 @@ bool Communicator::begin(const uint8_t app_id)
     _lastData.clear();
     _queue.clear();
     _canSend = true;
-    _retry = 0;
+    _retry = false;
 
     return true;
 }
@@ -160,45 +159,63 @@ void Communicator::update()
 {
     lock_guard lock(_sem);
 
+    auto ms = millis();
+    
     if(!_began || !_canSend) { return; }
 
-    // TODO:回数によって切断する?
+    // Retry send last data to last destination
     if(_retry)
     {
+        // Deemed disconnected
+        if(_sendTime && (ms - _sendTime) > DISCONNECT_TIME_THRESHOLD)
+        {
+            LIB_LOGE("Disconnect %s", _lastDest.toString().c_str());
+            unregisterPeer(_lastDest);
+            std::for_each(_transceivers.begin(), _transceivers.end(),
+                          [this](Transceiver* t) { t->onNotify(Notify::Disconnect, &(this->_lastDest)); });
+            _queue[_lastDest].clear();
+            _lastData.clear();
+            _sendTime = 0;
+            _retry = false;
+            return;
+        }
         LIB_LOGE("Retry:%s %zu", _lastDest.toString().c_str(), _lastData.size());
         send(_lastDest, _lastData);
         return;
     }
 
+    // Send if exists (Order by MACAddresss ASC)
     for(auto& it : _queue) // first:MACAddress second:vector
     {
         if(!it.second.empty())
         {
-            send(it.first, it.second);
+            if(send(it.first, it.second)) { _sendTime = ms; }
             break;
         }
     }
 }
 
-// Must be call in lock.
-bool Communicator::send(const MACAddress& addr, std::vector<uint8_t>& vec)
+bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    auto ret = esp_now_send(addr.data(), vec.data(), vec.size());
-    if(ret != ESP_OK) { LIB_LOGE("Failed to send %d:%s", ret, err2cstr(ret)); return false; }
+    lock_guard lock(_sem);
+    if(!_began || !_canSend) { return false; }
+    if(sizeof(Header) + length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
 
-    ////
-    const uint8_t* p = vec.data();;
-    auto cnt = ((const Header*)p)->count;
-    p += sizeof(Header);
-    const Transceiver::Header* th = (const Transceiver::Header*)p;
-    p += sizeof(Transceiver::Header);
-    LIB_LOGD("[S]:%u %u sz:%u [%02x]", cnt, th->sequence, th->size, *p);
+    std::vector<uint8_t> v;
+    v.reserve(ESP_NOW_MAX_DATA_LEN);
+    
+    Header h;
+    h.app_id = _app_id;
+    h.count = 1;
+    v.insert(v.end(), (uint8_t*)&h, (uint8_t*)&h + sizeof(h));
+    v.insert(v.end(), (uint8_t*)data, (uint8_t*)data + length);
 
-    _lastDest = addr;
-    if(&_lastData != &vec) { _lastData = std::move(vec); }
-
-    _canSend = !(ret == ESP_OK);
-    return (ret == ESP_OK);
+    if(send(peer_addr ? MACAddress(peer_addr) : MACAddress(), v))
+    {
+        _sendTime = millis();
+        return true;
+    }
+    return false;
 }
 
 bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
@@ -229,6 +246,18 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     assert(md.size() == osz + length && "Failed to insert");
     LIB_LOGD("[CP]%u/%zu", header->count, md.size());
 
+    return true;
+}
+
+// Must be call in lock.
+bool Communicator::send(const MACAddress& addr, std::vector<uint8_t>& vec)
+{
+    auto ret = esp_now_send(addr.data(), vec.data(), vec.size());
+    if(ret != ESP_OK) { LIB_LOGE("Failed to send %d:%s", ret, err2cstr(ret)); return false; }
+
+    _canSend = false;
+    _lastDest = addr;
+    if(&_lastData != &vec) { _lastData = std::move(vec); }
     return true;
 }
 
@@ -320,20 +349,21 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
 #if !defined(NDEBUG)
     if(isEnableDebug() && randf() < _debugSendLoss)
     {
-        LIB_LOGD("[D]:Lost send");
-        ++_retry;
+        LIB_LOGD("[D]:LostS");
+        _retry = true;
         return;
     }
 #endif
     if(status == ESP_NOW_SEND_SUCCESS)
     {
-        _retry = 0;
+        _retry = false;
         _lastData.clear();
+        _sendTime = 0;
     }
     else
     {
         LIB_LOGE("Failed to sent");
-        ++_retry;
+        _retry = true;
     }
 }
 
@@ -347,14 +377,13 @@ void Communicator::callback_onReceive(const uint8_t *mac_addr, const uint8_t* da
 
 void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)
 {
-    const Header* h = (const Header*)data;
-    if(h->signeture != SIGNETURE || h->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
+    auto ch = (const Header*)data;
+    if(ch->signeture != Header::SIGNETURE
+       || ch->version != Header::VERSION
+       || ch->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
 
-    ////
+    auto cnt = ch->count;
     data += sizeof(Header);
-    auto cnt = h->count;
-    LIB_LOGD("Rtc:%u", cnt);
-
     while(cnt--)
     {
         auto th = (const Transceiver::Header*)data;
@@ -364,9 +393,10 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
             if(t->identifier() == th->tid)
             {
 #if !defined(NDEBUG)
-                if(isEnableDebug() && randf() < _debugRecvLoss)
+                auto f = randf();
+                if(isEnableDebug() && f < _debugRecvLoss)
                 {
-                    LIB_LOGD("[D]:Lost recv tid:%u", t->identifier());
+                    LIB_LOGD("[D]:%.2f %f LostR tid:%u", f, _debugRecvLoss, t->identifier());
                     continue;
                 }
 #endif
@@ -391,24 +421,35 @@ Transceiver::~Transceiver()
     vSemaphoreDelete(_sem);
 }
 
-bool Transceiver::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
+uint8_t* Transceiver::make_data(uint8_t* buf, const MACAddress& addr, const void* data, const uint8_t length)
 {
-    lock_guard lock(_sem);
-
-    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
-    uint8_t buf[sizeof(Header) + length]{};
-
     // Header
     Header* h = (Header*)buf;
     h->tid = _tid;
     h->size = sizeof(Header) + length;
-    h->sequence = ++_sequence & 0xFF;
-    h->ack = _ack[addr];
-
-    // Append payload
-    if(data && length) { std::memcpy(buf + sizeof(Header), data, length); }
-
+    {
+        lock_guard lock(_sem);
+        h->sequence = ++_sequence & 0xFF;
+        h->ack = _ack[addr];
+    }
+    if(data && length) { std::memcpy(buf + sizeof(Header), data, length); } // Append payload
+    return buf;
+}
+                   
+bool Transceiver::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
+{
+    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
+    uint8_t buf[sizeof(Header) + length]{};
+    make_data(buf, addr, data, length);
     return Communicator::instance().post(peer_addr, buf, sizeof(buf));
+}
+
+bool Transceiver::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
+{
+    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
+    uint8_t buf[sizeof(Header) + length]{};
+    make_data(buf, addr, data, length);
+    return Communicator::instance().send(peer_addr, buf, sizeof(buf));
 }
 
 void Transceiver::onReceive(const MACAddress& addr, const Header* data)

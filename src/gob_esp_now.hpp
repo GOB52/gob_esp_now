@@ -221,7 +221,7 @@ struct Payload_SYN
 */
 enum Notify : uint8_t
 {
-    Disconnect,  //!< @brief Peer disconnection
+    Disconnect,  //!< @brief Peer disconnection @note arg MACAddress*
 };
 
 class Transceiver;
@@ -278,7 +278,14 @@ class Communicator
       @note Only stores data, actual transmission is done by update()
      */
     bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
-
+    /*!
+      @brief Sendx transceiver data
+      @param peer_addr MAC address (send all unicast peer if nullptr)
+      @param data Transceiver header and subsequent payload
+      @param length Length of tdata
+     */
+    bool send(const uint8_t* peer_addr, const void* data, const uint8_t length);
+    
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
     ///@note Create a pseudo send/receive loss condition
@@ -298,8 +305,7 @@ class Communicator
     Communicator();
     
   protected:
-    static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
-    static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
+    static constexpr unsigned long DISCONNECT_TIME_THRESHOLD =  4000; //!< @brief Threshold for disconnect (ms)
     
     /*!
       @struct Header
@@ -307,6 +313,9 @@ class Communicator
      */
     struct Header
     {
+        static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
+        static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
+
         uint16_t signeture{SIGNETURE}; //!< @brief  Signeture of the Communicator's data
         uint8_t  version{VERSION};     //!< @brief  Version of the header
         uint8_t  app_id{};             //!< @brief  Application-specific ID
@@ -337,7 +346,8 @@ class Communicator
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     volatile bool _canSend{};
-    volatile uint8_t _retry{};
+    volatile bool _retry{};
+    unsigned long _sendTime{};
 
     MACAddress _addr{}; // Self address
     std::vector<Transceiver*> _transceivers;
@@ -389,13 +399,15 @@ class Transceiver
     inline uint64_t ack(const MACAddress& addr) const { lock_guard _(_sem); return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; } //!< @brief Gets the ack No
     ///@}
 
-    ///@name Post
+    ///@name Data transmission
     ///@{
     /*!
       @brief Post data
       @param peer_addr Destination address. Post to all peer if nullptr
       @param data Payload data if exists
       @param length Length of the payload data if exists
+      @note In the case of Post, data are combined.
+      @note To reduce the number of transmissions when sending multiple data or transceivers.
      */
     bool post(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     //! @brief Post to all peer
@@ -404,22 +416,54 @@ class Transceiver
     template<typename T> inline bool post(const MACAddress& addr, const T& data) { return post(addr.data(), &data ,sizeof(data)); }
     //! @brief Post to all peer
     template<typename T> inline bool post(                        const T& data) { return post(nullptr,     &data ,sizeof(data)); }
+
+    /*!
+      @brief Send data
+      @param peer_addr Destination address. Post to all peer if nullptr
+      @param data Payload data if exists
+      @param length Length of the payload data if exists
+      @warning ESP-NOW does not allow frequent calls to be sent without a send callback being received,
+      @warning as such calls will result in an error (in which case the library will return a failure).
+      @warning (In that case, the library will return failure.)
+     */
+    bool send(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    //! @brief Send to all peer
+    inline bool send(                   const void* data = nullptr, const uint8_t length = 0) { return send(nullptr, data, length); }
+    //! @brief Send to destination
+    template<typename T> inline bool send(const MACAddress& addr, const T& data) { return send(addr.data(), &data ,sizeof(data)); }
+    //! @brief Send to all peer
+    template<typename T> inline bool send(                        const T& data) { return send(nullptr,     &data ,sizeof(data)); }
     ///@}
 
+    /*!
+      @brief Receive data
+      @note Called from WiFi task, so be careful of exclusivity control, etc.
+      @warning Parent class function call required if overrided
+      @sa with_lock
+    */
+    virtual void onReceive(const MACAddress& addr, const Header* data);
+    //! @brief Notifications from Communicator
+    virtual void onNotify(const Notify /*notify*/, void* arg = nullptr) { /* nop */ }
+    
     /*!
       @brief Call any function with lock
       @param Func Any functor
       @param args Arguments for functor
-      @code
+      @details Example
+      @code{.cpp}
       class YourTransceiver : public Transceiver
       {
-          //...Omission
-          int yourThreadSafeFunction(const int mul)
+          struct Payload { int value; };
+          explicit YourTransceiver(const uint8_t tid) : Transceiver(tid) {}         
+          virtual void onReceive(const MACAddress& addr, const Header* data) override
           {
-              return with_lock([&](const int m) { return _need_thread_safe_value * m; }, mul);
+              with_lock([&]() { _value = ((PayLoad*)data->payload())->value; });
           }
-          volatile int need_thread_safe_value{};
+          volatile int _value{};
       };
+      YourTransceiver yt(1);
+      YourTransceiver::Payload pl = { 52; }
+      yt.send(pl);
       @endcode
      */
     template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
@@ -429,10 +473,9 @@ class Transceiver
         return func(std::forward<Args>(args)...);
     }
 
-    virtual void onNotify(const Notify, void* arg = nullptr){}
-    /*! @warning Parent class function call required if overrided */
-    virtual void onReceive(const MACAddress& addr, const Header* data);
-
+  protected:
+    uint8_t* make_data(uint8_t* buf, const MACAddress& addr, const void* data, const uint8_t length);
+    
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     uint8_t _tid{}; // Transceiver unique identifier
