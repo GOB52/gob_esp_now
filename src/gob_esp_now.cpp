@@ -42,9 +42,23 @@ const char* err2cstr(esp_err_t e)
 }
 
 float randf() { return esp_random() / (float)UINT32_MAX; } // [0.0, 1.0]
+
+template<typename ...Args> String formatString(const char* fmt, Args... args)
+{
+    size_t sz = snprintf(nullptr, 0U, fmt, args...); // calculate length
+    char buf[sz + 1];
+    snprintf(buf, sizeof(buf), fmt, args...);
+    return String(buf, sz);
+}
+
 #else
 const char* err2cstr(esp_err_t) { return ""; }
 #endif
+
+inline uint64_t modify_uint64(const uint64_t u64, const uint8_t u8)
+{
+    return ((u64 & 0xFFFFFFFFFFFFFF00) + (u8 < (uint8_t)(u64 & 0xFF) ? 0x100 : 0x00)) | u8;
+}
 //
 }
 
@@ -67,6 +81,7 @@ bool MACAddress::get(const esp_mac_type_t mtype)
 
 bool MACAddress::parse(const char* str)
 {
+    assert(str && "nullptr");
     _addr64 = 0;
     int tmp[ESP_NOW_ETH_ALEN]{};
     auto res = sscanf(str ? str : "", "%x:%x:%x:%x:%x:%x", &tmp[0], &tmp[1], &tmp[2], &tmp[3], &tmp[4], &tmp[5]);
@@ -78,11 +93,11 @@ bool MACAddress::parse(const char* str)
     return false;
 }
 
-String MACAddress::toString() const
+String MACAddress::toString(const bool mask) const
 {
     char buf[128]{};
-    snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x",
-             _addr[0], _addr[1], _addr[2], _addr[3], _addr[4], _addr[5]);
+    if(mask) { snprintf(buf, sizeof(buf), "xx:xx:xx:%02x:%02x:%02x",  _addr[3], _addr[4], _addr[5]); }
+    else     { snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x",  _addr[0], _addr[1], _addr[2], _addr[3], _addr[4], _addr[5]); }
     buf[sizeof(buf)-1] = '\0';
     return String(buf);
 }
@@ -166,21 +181,26 @@ void Communicator::update()
     // Retry send last data to last destination
     if(_retry)
     {
-        // Deemed disconnected
-        if(_sendTime && (ms - _sendTime) > DISCONNECT_TIME_THRESHOLD)
+        // Connection lost?
+        if(_sendTime && (ms - _sendTime) > _lossOfConnectionTime)
         {
-            LIB_LOGE("Disconnect %s", _lastDest.toString().c_str());
-            unregisterPeer(_lastDest);
-            std::for_each(_transceivers.begin(), _transceivers.end(),
-                          [this](Transceiver* t) { t->onNotify(Notify::Disconnect, &(this->_lastDest)); });
-            _queue[_lastDest].clear();
+            LIB_LOGD("<LoC> %s", _lastAddr.toString().c_str());
+            if((bool)_lastAddr)
+            {
+                std::for_each(_transceivers.begin(), _transceivers.end(), [this](Transceiver* t)
+                {
+                    t->onNotify(Notify::Disconnect, &(this->_lastAddr));
+                });
+            }
+            _queue[_lastAddr].clear();
             _lastData.clear();
             _sendTime = 0;
             _retry = false;
             return;
         }
-        LIB_LOGE("Retry:%s %zu", _lastDest.toString().c_str(), _lastData.size());
-        send(_lastDest, _lastData);
+        // Resend
+        LIB_LOGD("Retry:%s %zu", _lastAddr.toString().c_str(), _lastData.size());
+        send_esp_now((bool)_lastAddr ? _lastAddr.data() : nullptr, _lastData);
         return;
     }
 
@@ -189,15 +209,18 @@ void Communicator::update()
     {
         if(!it.second.empty())
         {
-            if(send(it.first, it.second)) { _sendTime = ms; }
+            LIB_LOGD("Send");
+            send_esp_now((bool)it.first ? it.first.data() : nullptr, it.second);
             break;
         }
     }
 }
 
+// Send directly
 bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     lock_guard lock(_sem);
+
     if(!_began || !_canSend) { return false; }
     if(sizeof(Header) + length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
 
@@ -210,14 +233,10 @@ bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_
     v.insert(v.end(), (uint8_t*)&h, (uint8_t*)&h + sizeof(h));
     v.insert(v.end(), (uint8_t*)data, (uint8_t*)data + length);
 
-    if(send(peer_addr ? MACAddress(peer_addr) : MACAddress(), v))
-    {
-        _sendTime = millis();
-        return true;
-    }
-    return false;
+    return send_esp_now(peer_addr, v);
 }
 
+// Post
 bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     lock_guard lock(_sem);
@@ -244,20 +263,41 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     auto osz = md.size();
     md.insert(md.end(), (uint8_t*)data, (uint8_t*)data + length);
     assert(md.size() == osz + length && "Failed to insert");
-    LIB_LOGD("[CP]%u/%zu", header->count, md.size());
+    LIB_LOGD("CHeadr:%u,%zu", header->count, md.size());
 
     return true;
 }
 
 // Must be call in lock.
-bool Communicator::send(const MACAddress& addr, std::vector<uint8_t>& vec)
+bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& vec)
 {
-    auto ret = esp_now_send(addr.data(), vec.data(), vec.size());
-    if(ret != ESP_OK) { LIB_LOGE("Failed to send %d:%s", ret, err2cstr(ret)); return false; }
+#if 0
+    if(!vec.empty())
+    {
+        auto ch = (const Header*)vec.data();
+        auto th = (const Transceiver::Header*)(vec.data() + sizeof(Header));
+        LIB_LOGD("SEQ:%u", th->sequence);
+    }
+#endif
+    
+#if !defined(NDEBUG)
+    if(isEnableDebug() && randf() < _debugSendLoss)
+    {
+        if(!_sendTime) { _sendTime = millis(); }
+        _lastAddr = MACAddress(peer_addr);
+        if(&_lastData != &vec) { _lastData = std::move(vec); }
+        LIB_LOGD("[D]:LostS");
+        return false;;
+    }
+#endif
+    auto ret = esp_now_send(peer_addr, vec.data(), vec.size());
+    if(ret != ESP_OK) { LIB_LOGE("Failed to esp_now_send %d:%s", ret, err2cstr(ret)); return false; }
 
+    if(!_sendTime) { _sendTime = millis(); }
     _canSend = false;
-    _lastDest = addr;
+    _lastAddr = MACAddress(peer_addr);
     if(&_lastData != &vec) { _lastData = std::move(vec); }
+
     return true;
 }
 
@@ -269,6 +309,12 @@ bool Communicator::registerTransceiver(Transceiver* t)
     if(it != _transceivers.end()) { return true; }
 
     _transceivers.push_back(t);
+    std::sort(_transceivers.begin(), _transceivers.end(), [](Transceiver* a, Transceiver* b)
+    {
+        return a->identifier() < b->identifier();
+                          
+    });
+
     return true;
 }
 
@@ -337,7 +383,7 @@ bool Communicator::existsPeer(const MACAddress& addr)
 void Communicator::callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status)
 {
     MACAddress addr(mac_addr);
-    //LIB_LOGV("static sent to %s %d", addr.toString().c_str(), status);
+    LIB_LOGV("static sent to %s %d", addr.toString().c_str(), status);
     instance().onSent(addr, status);
 }
 
@@ -346,23 +392,17 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     lock_guard lock(_sem);
     _canSend = true;
 
-#if !defined(NDEBUG)
-    if(isEnableDebug() && randf() < _debugSendLoss)
-    {
-        LIB_LOGD("[D]:LostS");
-        _retry = true;
-        return;
-    }
-#endif
     if(status == ESP_NOW_SEND_SUCCESS)
     {
+        LIB_LOGV("ESP_NOW_SEND_SUCCESS %s", addr.toString().c_str());
         _retry = false;
         _lastData.clear();
         _sendTime = 0;
     }
     else
     {
-        LIB_LOGE("Failed to sent");
+        LIB_LOGE("ESP_NOW_SEND_FAIL %s", addr.toString().c_str());
+        // 
         _retry = true;
     }
 }
@@ -378,10 +418,12 @@ void Communicator::callback_onReceive(const uint8_t *mac_addr, const uint8_t* da
 void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)
 {
     auto ch = (const Header*)data;
+    // Check 
     if(ch->signeture != Header::SIGNETURE
        || ch->version != Header::VERSION
        || ch->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
 
+    // To the transceivers
     auto cnt = ch->count;
     data += sizeof(Header);
     while(cnt--)
@@ -400,13 +442,55 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                     continue;
                 }
 #endif
-                t->onReceive(addr, th);
+                // Duplicate incoming data is not processed.
+                uint64_t ack = t->ack(addr);
+                if(modify_uint64(ack, th->sequence) > ack)
+                {
+                    t->on_receive(addr, th);
+                    t->onReceive(addr, th);
+                }
+                else { LIB_LOGW("Duplicated data has come:%u",th->sequence); }
                 break;
             }
         }
         data += th->size;
     }
 }
+
+#if !defined(NDEBUG)
+String Communicator::debugInfo() const
+{
+    lock_guard lock(_sem);
+    String s;
+    s += formatString("Communicator app_id:%u, %zu transceivers\n", _app_id, _transceivers.size());
+
+    for(auto& t : _transceivers)
+    {
+        s += String("  ") + t->debugInfo() + '\n';
+    }
+
+    s += "peer list:\n";
+    esp_now_peer_info_t info{};
+    if(esp_now_fetch_peer(true, &info) == ESP_OK)
+    {
+        do
+        {
+            MACAddress addr(info.peer_addr);
+            s += String("  ") + addr.toString() + '\n';
+        }
+        while(esp_now_fetch_peer(false, &info) == ESP_OK);
+    }
+    s += formatString("last: [%s] %zu\n", _lastAddr.toString().c_str(), _lastData.size());
+    s += formatString("queue:%xu\n", _queue.size());
+    for(auto& it : _queue)
+    {
+        s += formatString("  [%s] %zu\n", it.first.toString().c_str(), it.second.size());
+    }
+
+    s.trim();
+    return s;
+}
+#endif
 
 // -----------------------------------------------------------------------------
 // class Transceiver
@@ -421,7 +505,7 @@ Transceiver::~Transceiver()
     vSemaphoreDelete(_sem);
 }
 
-uint8_t* Transceiver::make_data(uint8_t* buf, const MACAddress& addr, const void* data, const uint8_t length)
+uint8_t* Transceiver::make_data(uint8_t* buf, const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     // Header
     Header* h = (Header*)buf;
@@ -429,8 +513,8 @@ uint8_t* Transceiver::make_data(uint8_t* buf, const MACAddress& addr, const void
     h->size = sizeof(Header) + length;
     {
         lock_guard lock(_sem);
-        h->sequence = ++_sequence & 0xFF;
-        h->ack = _ack[addr];
+        h->sequence = (++_sequence) & 0xFF;
+        h->ack = _ack[MACAddress(peer_addr)];
     }
     if(data && length) { std::memcpy(buf + sizeof(Header), data, length); } // Append payload
     return buf;
@@ -438,28 +522,41 @@ uint8_t* Transceiver::make_data(uint8_t* buf, const MACAddress& addr, const void
                    
 bool Transceiver::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
     uint8_t buf[sizeof(Header) + length]{};
-    make_data(buf, addr, data, length);
+    make_data(buf, peer_addr, data, length);
     return Communicator::instance().post(peer_addr, buf, sizeof(buf));
 }
 
 bool Transceiver::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    MACAddress addr = peer_addr ? MACAddress(peer_addr) : MACAddress();
     uint8_t buf[sizeof(Header) + length]{};
-    make_data(buf, addr, data, length);
+    make_data(buf, peer_addr, data, length);
     return Communicator::instance().send(peer_addr, buf, sizeof(buf));
 }
 
-void Transceiver::onReceive(const MACAddress& addr, const Header* data)
+void Transceiver::on_receive(const MACAddress& addr, const Header* data)
 {
     lock_guard lock(_sem);
-    uint64_t ack_h56 = _ack[addr] & 0xFFFFFFFFFFFFFF00;
-    uint8_t  ack_l8 =  _ack[addr] & 0x00000000000000FF;
-    if(data->sequence < ack_l8) { ack_h56 += 0x100; } // 8bit overflow?
-    _ack[addr] = ack_h56 | data->sequence;
+    // Update ACK
+    auto old = _ack[addr];
+    _ack[addr] = modify_uint64(_ack[addr], data->sequence);
+    LIB_LOGW("seq:%u ack %llu => %llu", data->sequence, old, _ack[addr]);
 }
+
+#if !defined(NDEBUG)
+String Transceiver::debugInfo() const
+{
+    lock_guard lock(_sem);
+    String s;
+    s = formatString("ID:%u SEQ:%llu\n", _tid, _sequence);
+    for(auto& it :  _ack)
+    {
+        s += formatString("  ACK:[%s]:%llu\n", it.first.toString().c_str(), it.second);
+    }
+    s.trim();
+    return s;
+}
+#endif
 
 #if 0
 // -----------------------------------------------------------------------------

@@ -38,7 +38,6 @@ namespace goblib {
   @brief For ESP-NOW
  */
 namespace esp_now {
-//esp_fill_random
 
 constexpr const char LIB_TAG[] = "GEN"; //!< @brief Tag for logging
 
@@ -50,13 +49,11 @@ struct lock_guard
 {
     explicit lock_guard (SemaphoreHandle_t& s) : _sem(&s) { xSemaphoreTake(*_sem, portMAX_DELAY); }
     ~lock_guard()                                         { xSemaphoreGive(*_sem); }
-
     lock_guard() = delete;
     lock_guard(const lock_guard&) = delete;
     lock_guard(lock_guard&&) = delete;
     lock_guard& operator=(const lock_guard&) = delete;
     lock_guard& operator=(lock_guard&&) = delete;
-
   private:
     SemaphoreHandle_t* _sem{};
 };
@@ -82,8 +79,8 @@ class MACAddress
         while(first != last) { *ptr++ = *first++; }
     }
     explicit MACAddress(std::initializer_list<uint8_t> il) : MACAddress(il.begin(), il.end()) {}
-    explicit MACAddress(const uint8_t* addr) { assert(addr && "nullptr"); std::memcpy(_addr, addr, sizeof(_addr)); }
-    explicit MACAddress(const char* str) { assert(str && "nullptr"); parse(str); }
+    explicit MACAddress(const uint8_t* addr) { if(addr) { std::memcpy(_addr, addr, sizeof(_addr)); } }
+    explicit MACAddress(const char* str) { if(str) { parse(str); } }
     explicit MACAddress(const esp_mac_type_t mt) { get(mt); }
     MACAddress(const MACAddress& x) { _addr64 = x._addr64; }
     MACAddress(MACAddress&& x)      { _addr64 = x._addr64; x._addr64 = 0; }
@@ -103,7 +100,16 @@ class MACAddress
     }
     ///@}
 
+    ///@name Cast
+    ///@{
     explicit inline constexpr operator uint64_t() const noexcept { return _addr64; } //!< @brief Cast to uint64_t
+    /*!
+      @brief Cast to bool
+      @retval false Null address (all zero)
+     */
+    explicit inline constexpr operator bool() const noexcept { return _addr64 != 0ULL; }
+    inline constexpr bool operator!() const noexcept { return !static_cast<bool>(*this); } //!< @brief Null address?
+    ///@}
     
     /// @name Properties
     /// @{
@@ -126,8 +132,10 @@ class MACAddress
     inline uint8_t        operator[](size_t i) const&& { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return std::move(_addr[i]); }
     //! @brief direct access to the underlying array 
     inline constexpr const uint8_t* data() const { return _addr; }
+#if 0
     //! @brief direct access to the underlying array 
-    inline uint8_t* data() { return const_cast<uint8_t*>(data()); }
+    inline uint8_t* data() { return _addr) }
+#endif
     /// @}
 
     /*!
@@ -139,7 +147,11 @@ class MACAddress
     */
     bool get(const esp_mac_type_t mtype);
     bool parse(const char* str); //!< @brief Obtains an instance from a text string such as "12:34:56:78:aB:Cd"
-    String toString() const; //!< @brief Outputs as a String, such as "fe:dc:ba:98:76:54"
+    /*!
+      @brief Outputs as a String, such as "fe:dc:ba:98:76:54"
+      @param mask Mask upper address if true
+     */
+    String toString(const bool mask = false) const; 
 
     /// @cond 0
     friend bool operator==(const MACAddress& a, const MACAddress& b);
@@ -147,7 +159,7 @@ class MACAddress
     friend bool operator< (const MACAddress& a, const MACAddress& b);
     /// @endcond
 
-  private:
+    //private:
     union
     {
         uint64_t _addr64{}; // Using higher 48 bits
@@ -242,7 +254,11 @@ class Communicator
     /// @endcond
 
     const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
-
+    //! Gets the threshold for loss of connection (ms)
+    unsigned long lossOfConnectionTime() const { return _lossOfConnectionTime; } 
+    //! Set threshold for loss of connection (ms)
+    void setLossOfConnectionTime(const unsigned long ms) { _lossOfConnectionTime = ms; }
+    
     /*!
       @brief Begin communication
       @param app_id Unique value for each application
@@ -289,7 +305,9 @@ class Communicator
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
     ///@note Create a pseudo send/receive loss condition
+    ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
     ///@{
+    String debugInfo() const;                               //!< @brief Gets the information string
     bool isEnableDebug() const     { return _debugEnable; } //!< @brief Are debugging features enabled?
     void enableDebug(const bool b) { _debugEnable = b;    } //!< @brief Enable/Disable debugging features
     float debugSendLoss() const    { return _debugSendLoss; } //!< @brief Gets the sending losee
@@ -303,9 +321,8 @@ class Communicator
     
   protected:
     Communicator();
-    
-  protected:
-    static constexpr unsigned long DISCONNECT_TIME_THRESHOLD =  4000; //!< @brief Threshold for disconnect (ms)
+
+    static constexpr unsigned long LOSS_OF_CONNECTION_TIME =  4000; //!< @brief Threshold for loss of connection (ms)
     
     /*!
       @struct Header
@@ -338,7 +355,7 @@ class Communicator
     void onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length);
     ///@}
 
-    bool send(const MACAddress& addr, std::vector<uint8_t>& vec);
+    bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& vec);
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
@@ -347,12 +364,12 @@ class Communicator
     bool _began{};
     volatile bool _canSend{};
     volatile bool _retry{};
-    unsigned long _sendTime{};
+    unsigned long _sendTime{}, _lossOfConnectionTime{LOSS_OF_CONNECTION_TIME};
 
     MACAddress _addr{}; // Self address
     std::vector<Transceiver*> _transceivers;
 
-    MACAddress _lastDest{};
+    MACAddress _lastAddr{};
     std::vector<uint8_t> _lastData{};
     std::map<MACAddress, std::vector<uint8_t>> _queue;
 
@@ -385,7 +402,10 @@ class Transceiver
         inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
     };//4
 
-    /*! @param tid Unique value for each transceiver */
+    /*!
+      @param tid Unique value for each transceiver
+      @note id also serves as priority (in ascending order)
+     */
     explicit Transceiver(const uint8_t tid);
     virtual ~Transceiver();
 
@@ -438,10 +458,9 @@ class Transceiver
     /*!
       @brief Receive data
       @note Called from WiFi task, so be careful of exclusivity control, etc.
-      @warning Parent class function call required if overrided
       @sa with_lock
     */
-    virtual void onReceive(const MACAddress& addr, const Header* data);
+    virtual void onReceive(const MACAddress& /*addr*/, const Header* /*data*/) {}
     //! @brief Notifications from Communicator
     virtual void onNotify(const Notify /*notify*/, void* arg = nullptr) { /* nop */ }
     
@@ -473,14 +492,26 @@ class Transceiver
         return func(std::forward<Args>(args)...);
     }
 
+#if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
+    ///@name Debugging features
+    ///@note Create a pseudo send/receive loss condition
+    ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
+    ///@{
+    String debugInfo() const;                               //!< @brief Gets the information string
+    ///@}
+#endif    
+
   protected:
-    uint8_t* make_data(uint8_t* buf, const MACAddress& addr, const void* data, const uint8_t length);
+    uint8_t* make_data(uint8_t* buf, const uint8_t* peer_addr, const void* data, const uint8_t length);
+    void on_receive(const MACAddress& addr, const Header* data);
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     uint8_t _tid{}; // Transceiver unique identifier
     uint64_t _sequence{}; // send sequence
     std::map<MACAddress, uint64_t> _ack; // received sequence
+
+    friend class Communicator;
 };
 
 #if 0
