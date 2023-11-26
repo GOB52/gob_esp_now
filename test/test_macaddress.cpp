@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <gob_esp_now.hpp>
+#include <gob_mac_address.hpp>
 
 using goblib::esp_now::MACAddress;
 
@@ -18,6 +18,11 @@ TEST(MACAddress, Basic)
 
     a7 = a1; // copy
     a8 = std::move(a9); // move
+
+    uint8_t* n8 = nullptr;
+    const char* ns = nullptr;
+    MACAddress an8(n8);
+    MACAddress ans(ns);
     
     // OUI/NIC
     EXPECT_EQ(a0.OUI(), 0);
@@ -85,6 +90,8 @@ TEST(MACAddress, Basic)
     EXPECT_FALSE(a6.isUniversal());
 
     // Compare
+    EXPECT_EQ(a0, an8);
+    EXPECT_EQ(a0, ans);
     EXPECT_EQ(a0, a9);
     EXPECT_EQ(a4, a8);
     EXPECT_EQ(a7, a1);
@@ -134,7 +141,6 @@ TEST(MACAddress, Basic)
     EXPECT_EQ(a2.data()[3], 0x98);
     EXPECT_EQ(a2.data()[4], 0x76);
     EXPECT_EQ(a2.data()[5], 0x54);
-
     
     // Cast
     uint64_t a64{};
@@ -152,6 +158,11 @@ TEST(MACAddress, Basic)
     EXPECT_EQ(a64, 0x06AB04030201);
     a64 = (uint64_t)a6;
     EXPECT_EQ(a64, 0xFFFFFFFFFFFF);
+
+    EXPECT_FALSE((bool)a0);
+    EXPECT_TRUE(!a0);
+    EXPECT_FALSE(!a1);
+    EXPECT_TRUE((bool)a1);
 }
 
 TEST(MACAddress, methods)
@@ -173,22 +184,41 @@ TEST(MACAddress, methods)
     Foo tbl[] = 
     {
         { &a0, "00:00:00:00:00:00" },
-        { &a1, "bc:9a:78:56:34:12" },
-        { &a2, "fe:dc:ba:98:76:54" },
+        { &a1, "bC:9A:78:56:34:12" },
+        { &a2, "Fe:Dc:bA:98:76:54" },
         { &a3, "01:02:03:04:05:06" },
         { &a4, "01:02:03:04:05:07" },
         { &a5, "01:02:03:04:ab:06" },
-        { &a6, "ff:ff:ff:ff:ff:ff" }
+        { &a6, "ff:ff:Ff:fF:FF:ff" }
     };
     // toString , parse
     for(auto it = std::begin(tbl); it != std::end(tbl); ++it)
     {
-        EXPECT_STREQ(it->addr->toString().c_str(), it->str) << it->str;
+        //EXPECT_STREQ(it->addr->toString().c_str(), it->str) << it->str;
+        EXPECT_TRUE(String(it->str).equalsIgnoreCase(it->addr->toString())) << it->str;
         MACAddress tmp;
         tmp.parse(it->str);
         EXPECT_EQ(*(it->addr), tmp) << it->str;
     }
 
+    // Failed to parse
+    {
+        MACAddress fp;
+        const char* ftbl[] =
+                {
+                    "",
+                    "12-34#56/78*9A~BC",
+                    "AB:CD:EF:GH:IJ:KL",
+                    "12:34:56",
+                    "0x123456789abc",
+                };
+        for(auto it = std::begin(ftbl); it != std::end(ftbl); ++it)
+        {
+            EXPECT_FALSE(fp.parse(*it)) << *it;
+            EXPECT_EQ((uint64_t)fp, 0ULL) << *it;
+        }
+    }
+    
     // get
     esp_mac_type_t mtTable[4] =
     {
