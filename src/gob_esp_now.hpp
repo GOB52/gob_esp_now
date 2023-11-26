@@ -16,16 +16,14 @@
 
 #include <cstdint>
 #include <initializer_list>
-#include <cstring> // std::memcpy
-#include <algorithm> // std::move
 #include <memory>
 #include <vector>
 #include <map>
 #include <FreeRTOS/freeRTOS.h>
 #include <FreeRTOS/semphr.h>
 #include <esp_now.h>
-#include <esp_mac.h>
 #include <WString.h>
+#include "gob_mac_address.hpp"
 
 /*!
   @namespace goblib
@@ -59,173 +57,96 @@ struct lock_guard
 };
 
 /*!
-  @class MACAddress
-  @brief MAC address class
- */
-class MACAddress
+  @struct CommunicatorHeader
+  @brief Communicator data header
+*/
+struct CommunicatorHeader
 {
-  public:
-    /// @name Constructor
-    /// @warning Be careful with endians
-    /// @warning 0x0000123456789abc => bc:9a:78:56:34:12 (little endian)
-    /// @{
-    constexpr MACAddress() {}
-    constexpr explicit MACAddress(const uint64_t addr) : _addr64(addr) {} 
-    constexpr MACAddress(const uint8_t u0, const uint8_t u1, const uint8_t u2, const uint8_t u3, const uint8_t u4, const uint8_t u5) : _addr{u0, u1, u2, u3, u4, u5} {}
-    template <class InputIter> MACAddress(InputIter first, InputIter last)
-    {
-        assert(last - first == ESP_NOW_ETH_ALEN && "Illegal size");
-        uint8_t* ptr{_addr};
-        while(first != last) { *ptr++ = *first++; }
-    }
-    explicit MACAddress(std::initializer_list<uint8_t> il) : MACAddress(il.begin(), il.end()) {}
-    explicit MACAddress(const uint8_t* addr) { if(addr) { std::memcpy(_addr, addr, sizeof(_addr)); } }
-    explicit MACAddress(const char* str) { if(str) { parse(str); } }
-    explicit MACAddress(const esp_mac_type_t mt) { get(mt); }
-    MACAddress(const MACAddress& x) { _addr64 = x._addr64; }
-    MACAddress(MACAddress&& x)      { _addr64 = x._addr64; x._addr64 = 0; }
-    /// @}
+    static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
+    static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
 
-    ///@name Assignment
-    ///@{
-    MACAddress& operator=(const MACAddress& x)
-    {
-        if(this != &x) { _addr64 = x._addr64; }
-        return *this;
-    }
-    MACAddress& operator=(MACAddress&& x)
-    {
-        if(this != &x) { _addr64 = x._addr64; x._addr64 = 0; }
-        return *this;
-    }
-    ///@}
+    uint16_t signeture{SIGNETURE}; //!< @brief  Signeture of the Communicator's data
+    uint8_t  version{VERSION};     //!< @brief  Version of the header
+    uint8_t  app_id{};             //!< @brief  Application-specific ID
+    uint8_t  count{};              //!< @brief  Number of transceiver data
+    uint8_t  reserved{};
+    // Transceiver data continues for count times.
+}  __attribute__((__packed__));
 
-    ///@name Cast
-    ///@{
-    explicit inline constexpr operator uint64_t() const noexcept { return _addr64; } //!< @brief Cast to uint64_t
-    /*!
-      @brief Cast to bool
-      @retval false Null address (all zero)
-     */
-    explicit inline constexpr operator bool() const noexcept { return _addr64 != 0ULL; }
-    inline constexpr bool operator!() const noexcept { return !static_cast<bool>(*this); } //!< @brief Null address?
-    ///@}
-    
-    /// @name Properties
-    /// @{
-    inline constexpr uint32_t OUI() const { return ((uint32_t)_addr[0] << 16) | ((uint32_t)_addr[1] << 8) | ((uint32_t)_addr[2]); }  //!< @brief Gets the Organisationally Unique Identifier
-    inline constexpr uint32_t NIC() const { return ((uint32_t)_addr[3] << 16) | ((uint32_t)_addr[4] << 8) | ((uint32_t)_addr[5]); }  //!< @brief Gets the Network Interface Controller
-    inline constexpr bool isUnicast()   const { return !isMulticast();     } //!< @brief Unicast address?
-    inline constexpr bool isMulticast() const { return _addr[0] & 0x01;    } //!< @brief Multicast address?
-    inline constexpr bool isBroadcast() const { return _addr64 == 0xFFFFFFFFFFFF; } //!< @brief Broadcast address?
-    inline constexpr bool isLocal()     const { return _addr[0] & 0x02;    } //!< @brief Locally administered?
-    inline constexpr bool isUniversal() const { return !isLocal();         } //!< @brief Universally administered?
-    /// @}
-    
-    /// @name Element access 
-    /// @{
-    /*! @brief access specified element */
-    inline const uint8_t& operator[](size_t i) const&  { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return _addr[i]; }
-    //! @brief access specified element 
-    inline uint8_t&       operator[](size_t i) &       { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return _addr[i]; }
-    //! @brief access specified element 
-    inline uint8_t        operator[](size_t i) const&& { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return std::move(_addr[i]); }
-    //! @brief direct access to the underlying array 
-    inline constexpr const uint8_t* data() const { return _addr; }
-#if 0
-    //! @brief direct access to the underlying array 
-    inline uint8_t* data() { return _addr) }
-#endif
-    /// @}
 
-    /*!
-      @brief Obtain an address of the specified type
-      @param mtype Type of address to be acquired
-      @retval true Success
-      @retval false Failed
-      @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/misc_system_api.html
-    */
-    bool get(const esp_mac_type_t mtype);
-    bool parse(const char* str); //!< @brief Obtains an instance from a text string such as "12:34:56:78:aB:Cd"
-    /*!
-      @brief Outputs as a String, such as "fe:dc:ba:98:76:54"
-      @param mask Mask upper address if true
-     */
-    String toString(const bool mask = false) const; 
-
-    /// @cond 0
-    friend bool operator==(const MACAddress& a, const MACAddress& b);
-    friend bool operator!=(const MACAddress& a, const MACAddress& b);
-    friend bool operator< (const MACAddress& a, const MACAddress& b);
-    /// @endcond
-
-    //private:
-    union
-    {
-        uint64_t _addr64{}; // Using higher 48 bits
-        uint8_t _addr[ESP_NOW_ETH_ALEN];
-    };
-};
-
-inline bool operator==(const MACAddress& a, const MACAddress& b) { return a._addr64 == b._addr64; }
-inline bool operator!=(const MACAddress& a, const MACAddress& b) { return !(a == b); }
-inline bool operator< (const MACAddress& a, const MACAddress& b)
-{
-    return std::tie(a._addr[0], a._addr[1], a._addr[2], a._addr[3], a._addr[4], a._addr[5]) <
-            std::tie(b._addr[0], b._addr[1], b._addr[2], b._addr[3], b._addr[4], b._addr[5]);
-}
-inline bool operator> (const MACAddress& a, const MACAddress& b) { return b < a;    }
-inline bool operator<=(const MACAddress& a, const MACAddress& b) { return !(a > b); }
-inline bool operator>=(const MACAddress& a, const MACAddress& b) { return !(a < b); }
-
-constexpr MACAddress BROADCAST = MACAddress(0xFFFFFFFFFFFF); //!< @brief Broadcast address
-
-#if 0
 /*!
-  @struct RUDPHeader
-  @brief RUDP-like header
- */
-struct RUDPHeader
+  @struct RUDP
+  @brief RUDP block
+*/
+struct RUDP
 {
+    ///@cond 0
+    static constexpr uint8_t _SYN = 0x80; // Begin session
+    static constexpr uint8_t _ACK = 0x40; // Acknowledge
+    static constexpr uint8_t _EAK = 0x20; // Selective ACK
+    static constexpr uint8_t _RST = 0x10; // End session
+    static constexpr uint8_t _NUL = 0x08; // Heartbeat
+    static constexpr uint8_t _CHK = 0x04; // Calculate CRC include payload if ON;
+    static constexpr uint8_t _TCS = 0x02; // Demand for resumption
+    ///@endcond
+    
     /*!
       @enum Flag
-      @brief Flag bits of RUDP type
-      @warning Not everything is implemented according to RUDP specifications.
-      @warning It is only a RUDP imitation.
+      @brief Flags of RUDP
      */
-    enum Flag : uint8_t
+    enum class Flag : uint8_t
+     {
+         SYN     = _SYN,        //!< @brief Begin session
+         SYN_ACK = _SYN | _ACK, //!< @brief Begin session with ACK
+         ACK     = _ACK,        //!< @brief Acknowledge (with payload if exists)
+         //ACK_CHK = _ACK | _CHK,
+         //EAK     = _ACK | _EAK,
+         RST     = _RST,        //!< @brief End session
+         RST_ACK = _ACK | _RST, //!< @brief End session with ACK
+         NUL     = _NUL | _ACK, //!< @brief Heartbeat
+         //TCS = _TCS,
+         //TCS_ACK = _TCS | _ACK,
+     };
+    using flag_t = std::underlying_type<Flag>::type; //!< @brief Flag type
+    static_assert(sizeof(flag_t) == sizeof(uint8_t), "Illegal size");
+    
+    flag_t  flag{};     //!< @brief flag ==0:Unreliable !=0:Reliable flags
+    uint8_t sequence{}; //!< @brief Lower 8bit of sequence
+    uint8_t ack{};      //!< @brief Lower 8bit of ack
+    //uint8_t _sum{};
+    
+    // Flag-specific data
+    // SYN
+    struct Syn
     {
-        SYN = 0x80, //!< @brief Begin session
-        ACK = 0x40, //!< @brief Acknowledge
-        EAK = 0x20, //!< @brief Selective ACK
-        RST = 0x10, //!< @brief End session
-        NUL = 0x08, //!< @brief Heartbeat
-        CHK = 0x04, //!< @brief Calculate CRC include payload if on. Otherwise calclulate only header.
-        TCS = 0x02, //!< @brief Demand for resumption
-    };
-    using flag_t = std::underlying_type<Flag>::type;
+        uint8_t session{};     // Session id
+        uint8_t outstanding{}; // 返答を待たずに遅れるセグメント数
+        uint8_t retransmissionTimeout{}; // 送ったデータに対して指定時間返答がなかったら再送信
+        uint8_t cumulativeAckTimeout{};  // セグメントを受け取ってから、この時間送信すべきものがなければACKのみ返す
+        uint8_t nullSegmentTimeout{};    // NUL 送信間隔
+        uint8_t transferStateTimeout{};  // 通信不能になってからこの時間のうちに TCS が来たら再開
+        uint8_t maxRetrans{};            // 最大再送回数(超えたら通信不能)
+        uint8_t maxCumAck{}; // 受け取ったがACKしていないセグメント数(超えたらACKのみ返す)
+        uint8_t maxOutOfSeq{}; // 来ていない手前のセグメントがあって、ACK だせないセグメントがこの数を超えたら EAK 送信
+        uint8_t maxAutoReset{}; // 通信不能になってから自動で 3WH 再試行していい回数
+    }  __attribute__((__packed__));
+}  __attribute__((__packed__));
 
-    //static constexpr uint32_t HEADER = 0X304e4547; // "GEN0" [G]ob_[E]sp_[N]ow header [0]
-    //    static constexpr uint32_t HEADER = 0X314e4547; // "GEN0" [G]ob_[E]sp_[N]ow header [1] as unreliable
-    //uint32_t header{HEADER}; //!< @brief Fixed header
-    flag_t flag{};             //!< @brief Type flag bits.
-    uint8_t channel{};       //!< @brief Channel No.
-    uint16_t session{};      //!< @brief Session ID
-    uint16_t sequence{};     //!< @brief Lower 16bits of sequence No.
-    uint16_t ack{};          //!< @brief Lower 16bits of ACK No.
-    //_crc{} with salt
-    uint8_t length{};        //!< @brief Size of the payload
-    uint8_t payload[1];      //!< @brief Head of the payload
-
-} __attribute__((__packed__));
-
-// Payload...
-struct Payload_SYN
+/*!
+  @struct TransceiverHeader
+  @brief Transceiver data header
+*/
+struct TransceiverHeader
 {
-    uint16_t session{};  // session id
-    uint16_t sequence{}; // sequence initial value.
-};
-#endif
+    uint8_t tid{};  //!< @brief Identifier
+    uint8_t size{}; //!< @brief Data size including this header
+    RUDP    rudp{}; //!< @brief RUDP header
+    // Payload continues if exists
+
+    inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
+    inline bool hasPayload() const { return size > sizeof(*this); } //!< @brief Has payload?
+}  __attribute__((__packed__));
+
 
 /*!
   @enum Notify
@@ -287,18 +208,18 @@ class Communicator
     /// @}
 
     /*!
-      @brief Post transceiver data
+      @brief Post data
       @param peer_addr MAC address (send all unicast peer if nullptr)
-      @param data Transceiver header and subsequent payload
-      @param length Length of tdata
+      @param data data pointer
+      @param length Length of data
       @note Only stores data, actual transmission is done by update()
      */
     bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
     /*!
-      @brief Sendx transceiver data
+      @brief Send transceiver data
       @param peer_addr MAC address (send all unicast peer if nullptr)
-      @param data Transceiver header and subsequent payload
-      @param length Length of tdata
+      @param data data pointer
+      @param length Length of data
      */
     bool send(const uint8_t* peer_addr, const void* data, const uint8_t length);
     
@@ -323,23 +244,6 @@ class Communicator
     Communicator();
 
     static constexpr unsigned long LOSS_OF_CONNECTION_TIME =  4000; //!< @brief Threshold for loss of connection (ms)
-    
-    /*!
-      @struct Header
-      @brief Communicator data header
-     */
-    struct Header
-    {
-        static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
-        static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
-
-        uint16_t signeture{SIGNETURE}; //!< @brief  Signeture of the Communicator's data
-        uint8_t  version{VERSION};     //!< @brief  Version of the header
-        uint8_t  app_id{};             //!< @brief  Application-specific ID
-        uint8_t  count{};              //!< @brief  Number of transceiver data
-        uint8_t  reserved{};
-        // Transceiver data continues for count times.
-    };//6
 
     ///@name Callback
     ///@note Called from WiFi-task.
@@ -379,6 +283,15 @@ class Communicator
 #endif
 };
 
+/*
+TODO:
+  Transceiver::update  必要
+* RUDP 受け取って、送るものがない場合に一定期間で ACK のみ返したいので
+* HeartbeatTransceiver 作って一定タイミングで勝手にハートビートしたい
+_ack[addr] は seq が飛んだ場合の対処する
+
+
+*/
 
 /*!
    @class Transceiver
@@ -388,20 +301,6 @@ class Communicator
 class Transceiver
 {
   public:
-    /*!
-      @struct Header
-      @brief Common Transceiver header
-     */
-    struct Header
-    {
-        uint8_t  tid{};      //!< @brief Transerver id
-        uint8_t  size{};     //!< @brief  Data size including this header
-        uint8_t  sequence{}; //!< @brief  Lower 8bit of sequence
-        uint8_t  ack{};      //!< @brief  Lower 8bit of ack
-        // Payload continues if exists
-        inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
-    };//4
-
     /*!
       @param tid Unique value for each transceiver
       @note id also serves as priority (in ascending order)
@@ -428,14 +327,15 @@ class Transceiver
       @param length Length of the payload data if exists
       @note In the case of Post, data are combined.
       @note To reduce the number of transmissions when sending multiple data or transceivers.
+      @warnig 
      */
-    bool post(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    bool postReliable(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     //! @brief Post to all peer
-    inline bool post(                   const void* data = nullptr, const uint8_t length = 0) { return post(nullptr, data, length); }
+    inline bool postReliable(                   const void* data = nullptr, const uint8_t length = 0) { return postReliable(nullptr, data, length); }
     //! @brief Post to destination
-    template<typename T> inline bool post(const MACAddress& addr, const T& data) { return post(addr.data(), &data ,sizeof(data)); }
+    template<typename T> inline bool postReliable(const MACAddress& addr, const T& data) { return postReliable(addr.data(), &data ,sizeof(data)); }
     //! @brief Post to all peer
-    template<typename T> inline bool post(                        const T& data) { return post(nullptr,     &data ,sizeof(data)); }
+    template<typename T> inline bool postReliable(                        const T& data) { return postReliable(nullptr,     &data ,sizeof(data)); }
 
     /*!
       @brief Send data
@@ -443,16 +343,17 @@ class Transceiver
       @param data Payload data if exists
       @param length Length of the payload data if exists
       @warning ESP-NOW does not allow frequent calls to be sent without a send callback being received,
-      @warning as such calls will result in an error (in which case the library will return a failure).
-      @warning (In that case, the library will return failure.)
+      @warning as such calls will result in an error.In that case, the library will return failure.
+      @warning <em>Unlike post, if it fails, it is not automatically resubmitted by update,
+      @warning so you have to manage resubmission yourself.</em>
      */
-    bool send(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    bool sendReliable(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     //! @brief Send to all peer
-    inline bool send(                   const void* data = nullptr, const uint8_t length = 0) { return send(nullptr, data, length); }
+    inline bool sendReliable(                   const void* data = nullptr, const uint8_t length = 0) { return sendReliable(nullptr, data, length); }
     //! @brief Send to destination
-    template<typename T> inline bool send(const MACAddress& addr, const T& data) { return send(addr.data(), &data ,sizeof(data)); }
+    template<typename T> inline bool sendReliable(const MACAddress& addr, const T& data) { return sendReliable(addr.data(), &data ,sizeof(data)); }
     //! @brief Send to all peer
-    template<typename T> inline bool send(                        const T& data) { return send(nullptr,     &data ,sizeof(data)); }
+    template<typename T> inline bool sendReliable(                        const T& data) { return sendReliable(nullptr,     &data ,sizeof(data)); }
     ///@}
 
     /*!
@@ -460,7 +361,7 @@ class Transceiver
       @note Called from WiFi task, so be careful of exclusivity control, etc.
       @sa with_lock
     */
-    virtual void onReceive(const MACAddress& /*addr*/, const Header* /*data*/) {}
+    virtual void onReceive(const MACAddress& /*addr*/, const TransceiverHeader* /*data*/) {}
     //! @brief Notifications from Communicator
     virtual void onNotify(const Notify /*notify*/, void* arg = nullptr) { /* nop */ }
     
@@ -474,7 +375,7 @@ class Transceiver
       {
           struct Payload { int value; };
           explicit YourTransceiver(const uint8_t tid) : Transceiver(tid) {}         
-          virtual void onReceive(const MACAddress& addr, const Header* data) override
+          virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override
           {
               with_lock([&]() { _value = ((PayLoad*)data->payload())->value; });
           }
@@ -502,8 +403,10 @@ class Transceiver
 #endif    
 
   protected:
-    uint8_t* make_data(uint8_t* buf, const uint8_t* peer_addr, const void* data, const uint8_t length);
-    void on_receive(const MACAddress& addr, const Header* data);
+    virtual void update() {}
+
+    uint8_t* make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length);
+    void on_receive(const MACAddress& addr, const TransceiverHeader* data);
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
@@ -515,6 +418,13 @@ class Transceiver
 };
 
 #if 0
+class HeartbeatTransciver :  public Transceiver
+{
+  protected:
+    virtual void update() override;
+    virtual void onNotify(const Notify notify, void* arg) override;
+};
+
 class HandshakeTransceiver : public Transceiver
 {
   public:

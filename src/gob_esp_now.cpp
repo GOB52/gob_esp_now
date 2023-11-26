@@ -55,10 +55,29 @@ template<typename ...Args> String formatString(const char* fmt, Args... args)
 const char* err2cstr(esp_err_t) { return ""; }
 #endif
 
+#if 0
+void dump(const void* p, const size_t len)
+{
+    String s;
+    s = formatString("ADDR:%p\n", p);
+    for(size_t i = 0; i < len; ++i)
+    {
+        auto c = len - i < 
+        s += formatString("%*02x ", 
+    }
+}
+#endif
+    
 inline uint64_t modify_uint64(const uint64_t u64, const uint8_t u8)
 {
     return ((u64 & 0xFFFFFFFFFFFFFF00) + (u8 < (uint8_t)(u64 & 0xFF) ? 0x100 : 0x00)) | u8;
 }
+
+template<typename E> constexpr inline typename std::underlying_type<E>::type to_underlying(const E& e) noexcept
+{
+    return static_cast<typename std::underlying_type<E>::type>(e);
+}
+
 //
 }
 
@@ -70,37 +89,6 @@ inline uint64_t modify_uint64(const uint64_t u64, const uint8_t u8)
 #define LIB_LOGV(fmt, ...) ESP_LOGV(LIB_TAG, "[%s:%d] %s " #fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
 
 namespace goblib { namespace esp_now {
-
-// -----------------------------------------------------------------------------
-// class MACAddress
-bool MACAddress::get(const esp_mac_type_t mtype)
-{
-    _addr64 = 0;
-    return esp_read_mac(_addr, mtype) == ESP_OK;
-}
-
-bool MACAddress::parse(const char* str)
-{
-    assert(str && "nullptr");
-    _addr64 = 0;
-    int tmp[ESP_NOW_ETH_ALEN]{};
-    auto res = sscanf(str ? str : "", "%x:%x:%x:%x:%x:%x", &tmp[0], &tmp[1], &tmp[2], &tmp[3], &tmp[4], &tmp[5]);
-    if(res == ESP_NOW_ETH_ALEN && std::all_of(tmp, tmp + ESP_NOW_ETH_ALEN, [](const int v) { return v < 256; }))
-    {
-        *this = MACAddress(tmp, tmp + ESP_NOW_ETH_ALEN);
-        return true;
-    }
-    return false;
-}
-
-String MACAddress::toString(const bool mask) const
-{
-    char buf[128]{};
-    if(mask) { snprintf(buf, sizeof(buf), "xx:xx:xx:%02x:%02x:%02x",  _addr[3], _addr[4], _addr[5]); }
-    else     { snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x",  _addr[0], _addr[1], _addr[2], _addr[3], _addr[4], _addr[5]); }
-    buf[sizeof(buf)-1] = '\0';
-    return String(buf);
-}
 
 // -----------------------------------------------------------------------------
 // class Communicator
@@ -204,7 +192,7 @@ void Communicator::update()
         return;
     }
 
-    // Send if exists (Order by MACAddresss ASC)
+    // Send if exists (Order by MACAddresss ASC, Null MACAddress is top)
     for(auto& it : _queue) // first:MACAddress second:vector
     {
         if(!it.second.empty())
@@ -214,26 +202,6 @@ void Communicator::update()
             break;
         }
     }
-}
-
-// Send directly
-bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
-{
-    lock_guard lock(_sem);
-
-    if(!_began || !_canSend) { return false; }
-    if(sizeof(Header) + length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
-
-    std::vector<uint8_t> v;
-    v.reserve(ESP_NOW_MAX_DATA_LEN);
-    
-    Header h;
-    h.app_id = _app_id;
-    h.count = 1;
-    v.insert(v.end(), (uint8_t*)&h, (uint8_t*)&h + sizeof(h));
-    v.insert(v.end(), (uint8_t*)data, (uint8_t*)data + length);
-
-    return send_esp_now(peer_addr, v);
 }
 
 // Post
@@ -248,24 +216,45 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     // Modify header
     if(md.empty())
     {
-        Header h;
-        h.app_id = _app_id;
-        h.count = 0;
-        md.insert(md.end(), (uint8_t*)&h, (uint8_t*)&h + sizeof(h));
+        CommunicatorHeader ch;
+        ch.app_id = _app_id;
+        ch.count = 0;
+        md.insert(md.end(), (uint8_t*)&ch, (uint8_t*)&ch + sizeof(ch));
     }
 
     // Overflow
+    // TODO:..... 蓄積と再ポストはどうする?
     if(length + md.size() > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
 
     // Append data
-    Header* header = (Header*)md.data();
-    ++header->count;
+    CommunicatorHeader* cheader = (CommunicatorHeader*)md.data();
+    ++cheader->count;
     auto osz = md.size();
     md.insert(md.end(), (uint8_t*)data, (uint8_t*)data + length);
     assert(md.size() == osz + length && "Failed to insert");
-    LIB_LOGD("CHeadr:%u,%zu", header->count, md.size());
+    LIB_LOGD("CHeadr:%u,%zu", cheader->count, md.size());
 
     return true;
+}
+
+// Send directly
+bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
+{
+    lock_guard lock(_sem);
+
+    if(!_began || !_canSend) { return false; }
+    if(sizeof(CommunicatorHeader) + length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
+
+    std::vector<uint8_t> v;
+    v.reserve(ESP_NOW_MAX_DATA_LEN);
+    
+    CommunicatorHeader ch;
+    ch.app_id = _app_id;
+    ch.count = 1;
+    v.insert(v.end(), (uint8_t*)&ch, (uint8_t*)&ch + sizeof(ch));
+    v.insert(v.end(), (uint8_t*)data, (uint8_t*)data + length);
+
+    return send_esp_now(peer_addr, v);
 }
 
 // Must be call in lock.
@@ -274,9 +263,9 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
 #if 0
     if(!vec.empty())
     {
-        auto ch = (const Header*)vec.data();
-        auto th = (const Transceiver::Header*)(vec.data() + sizeof(Header));
-        LIB_LOGD("SEQ:%u", th->sequence);
+        auto ch = (const CommunicatorHeader*)vec.data();
+        auto th = (const TransceiverHeader*)(vec.data() + sizeof(CommunicatorHeader));
+        LIB_LOGD("SEQ:%u", th->rudp.sequence);
     }
 #endif
     
@@ -286,7 +275,8 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
         if(!_sendTime) { _sendTime = millis(); }
         _lastAddr = MACAddress(peer_addr);
         if(&_lastData != &vec) { _lastData = std::move(vec); }
-        LIB_LOGD("[D]:LostS");
+        _retry = true;
+        LIB_LOGD("[DF]:FailedS");
         return false;;
     }
 #endif
@@ -417,18 +407,18 @@ void Communicator::callback_onReceive(const uint8_t *mac_addr, const uint8_t* da
 
 void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)
 {
-    auto ch = (const Header*)data;
+    auto ch = (const CommunicatorHeader*)data;
     // Check 
-    if(ch->signeture != Header::SIGNETURE
-       || ch->version != Header::VERSION
+    if(ch->signeture != CommunicatorHeader::SIGNETURE
+       || ch->version != CommunicatorHeader::VERSION
        || ch->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
 
     // To the transceivers
     auto cnt = ch->count;
-    data += sizeof(Header);
+    data += sizeof(CommunicatorHeader);
     while(cnt--)
     {
-        auto th = (const Transceiver::Header*)data;
+        auto th = (const TransceiverHeader*)data;
         lock_guard lock(_sem);
         for(auto& t : _transceivers)
         {
@@ -438,18 +428,20 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                 auto f = randf();
                 if(isEnableDebug() && f < _debugRecvLoss)
                 {
-                    LIB_LOGD("[D]:%.2f %f LostR tid:%u", f, _debugRecvLoss, t->identifier());
+                    LIB_LOGD("[DF]:FailedR tid:%u", t->identifier());
                     continue;
                 }
 #endif
                 // Duplicate incoming data is not processed.
+                // // TODO: 正しい seq を受けたら (飛んでいない、古いデータは棄却)
                 uint64_t ack = t->ack(addr);
-                if(modify_uint64(ack, th->sequence) > ack)
+                if(modify_uint64(ack, th->rudp.sequence) > ack)
                 {
                     t->on_receive(addr, th);
-                    t->onReceive(addr, th);
+                    // TODO: 正しい seq を受けたら (飛んでいない)
+                    if(th->hasPayload()) { t->onReceive(addr, th); }
                 }
-                else { LIB_LOGW("Duplicated data has come:%u",th->sequence); }
+                else { LIB_LOGW("Duplicated data has come:%u",th->rudp.sequence); }
                 break;
             }
         }
@@ -481,7 +473,7 @@ String Communicator::debugInfo() const
         while(esp_now_fetch_peer(false, &info) == ESP_OK);
     }
     s += formatString("last: [%s] %zu\n", _lastAddr.toString().c_str(), _lastData.size());
-    s += formatString("queue:%xu\n", _queue.size());
+    s += formatString("queue:%zu\n", _queue.size());
     for(auto& it : _queue)
     {
         s += formatString("  [%s] %zu\n", it.first.toString().c_str(), it.second.size());
@@ -505,42 +497,45 @@ Transceiver::~Transceiver()
     vSemaphoreDelete(_sem);
 }
 
-uint8_t* Transceiver::make_data(uint8_t* buf, const uint8_t* peer_addr, const void* data, const uint8_t length)
+uint8_t* Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     // Header
-    Header* h = (Header*)buf;
-    h->tid = _tid;
-    h->size = sizeof(Header) + length;
+    TransceiverHeader* th = (TransceiverHeader*)obuf;
+    th->tid = _tid;
+    th->size = sizeof(*th) + length;
     {
         lock_guard lock(_sem);
-        h->sequence = (++_sequence) & 0xFF;
-        h->ack = _ack[MACAddress(peer_addr)];
+        th->rudp.flag = to_underlying(flag);
+        // TODO:RUDPのみ
+        th->rudp.sequence = (++_sequence) & 0xFF;
+        th->rudp.ack = _ack[MACAddress(peer_addr)];
     }
-    if(data && length) { std::memcpy(buf + sizeof(Header), data, length); } // Append payload
-    return buf;
+    if(data && length) { std::memcpy(obuf + sizeof(*th), data, length); } // Append payload
+    return obuf;
 }
                    
-bool Transceiver::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
+bool Transceiver::postReliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    uint8_t buf[sizeof(Header) + length]{};
-    make_data(buf, peer_addr, data, length);
+    uint8_t buf[sizeof(TransceiverHeader) + length]{};
+    make_data(buf, RUDP::Flag::ACK, peer_addr, data, length);
     return Communicator::instance().post(peer_addr, buf, sizeof(buf));
 }
 
-bool Transceiver::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
+bool Transceiver::sendReliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    uint8_t buf[sizeof(Header) + length]{};
-    make_data(buf, peer_addr, data, length);
+    uint8_t buf[sizeof(TransceiverHeader) + length]{};
+    make_data(buf, RUDP::Flag::ACK, peer_addr, data, length);
     return Communicator::instance().send(peer_addr, buf, sizeof(buf));
 }
 
-void Transceiver::on_receive(const MACAddress& addr, const Header* data)
+void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* data)
 {
     lock_guard lock(_sem);
+    // TODO:RUDP only
     // Update ACK
     auto old = _ack[addr];
-    _ack[addr] = modify_uint64(_ack[addr], data->sequence);
-    LIB_LOGW("seq:%u ack %llu => %llu", data->sequence, old, _ack[addr]);
+    _ack[addr] = modify_uint64(_ack[addr], data->rudp.sequence);
+    LIB_LOGW("seq:%u ack %llu => %llu", data->rudp.sequence, old, _ack[addr]);
 }
 
 #if !defined(NDEBUG)
