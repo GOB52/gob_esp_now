@@ -37,7 +37,7 @@ namespace goblib {
  */
 namespace esp_now {
 
-constexpr const char LIB_TAG[] = "GEN"; //!< @brief Tag for logging
+extern const char LIB_TAG[]; //!< @brief Tag for logging
 
 /*!
   @struct lock_guard
@@ -65,18 +65,20 @@ struct CommunicatorHeader
     static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
     static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
 
-    uint16_t signeture{SIGNETURE}; //!< @brief  Signeture of the Communicator's data
-    uint8_t  version{VERSION};     //!< @brief  Version of the header
-    uint8_t  app_id{};             //!< @brief  Application-specific ID
-    uint8_t  count{};              //!< @brief  Number of transceiver data
-    uint8_t  reserved{};
+    uint16_t signeture{SIGNETURE}; //!< @brief Signeture of the Communicator's data
+    uint8_t  version{VERSION};     //!< @brief Version of the header
+    uint8_t  app_id{};             //!< @brief Application-specific ID
+    uint8_t  count{};              //!< @brief Number of transceiver data
+    uint8_t  size{sizeof(*this)};  //!< @brief Size of packet [ |CH|TH...|TH......|TH.| ]
     // Transceiver data continues for count times.
 }  __attribute__((__packed__));
 
 
 /*!
   @struct RUDP
-  @brief RUDP block
+  @brief RUDP-like block
+  @details It does not meet all of the RUDP standards.
+  It is a simplified implementation.
 */
 struct RUDP
 {
@@ -86,7 +88,7 @@ struct RUDP
     static constexpr uint8_t _EAK = 0x20; // Selective ACK
     static constexpr uint8_t _RST = 0x10; // End session
     static constexpr uint8_t _NUL = 0x08; // Heartbeat
-    static constexpr uint8_t _CHK = 0x04; // Calculate CRC include payload if ON;
+    static constexpr uint8_t _CHK = 0x04; // Calculate checksum include payload?
     static constexpr uint8_t _TCS = 0x02; // Demand for resumption
     ///@endcond
     
@@ -96,6 +98,7 @@ struct RUDP
      */
     enum class Flag : uint8_t
      {
+         NONE    = 0,           //!< @brief Unreliable
          SYN     = _SYN,        //!< @brief Begin session
          SYN_ACK = _SYN | _ACK, //!< @brief Begin session with ACK
          ACK     = _ACK,        //!< @brief Acknowledge (with payload if exists)
@@ -116,8 +119,7 @@ struct RUDP
     //uint8_t _sum{};
     
     // Flag-specific data
-    // SYN
-    struct Syn
+    struct Payload_SYN
     {
         uint8_t session{};     // Session id
         uint8_t outstanding{}; // 返答を待たずに遅れるセグメント数
@@ -154,7 +156,8 @@ struct TransceiverHeader
 */
 enum Notify : uint8_t
 {
-    Disconnect,  //!< @brief Peer disconnection @note arg MACAddress*
+    Disconnect,     //!< @brief Actively disconnected
+    ConnectionLost, //!< @brief Connection lost
 };
 
 class Transceiver;
@@ -176,9 +179,9 @@ class Communicator
 
     const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
     //! Gets the threshold for loss of connection (ms)
-    unsigned long lossOfConnectionTime() const { return _lossOfConnectionTime; } 
+    unsigned long lossOfConnectionTime() const { return _locTime; } 
     //! Set threshold for loss of connection (ms)
-    void setLossOfConnectionTime(const unsigned long ms) { _lossOfConnectionTime = ms; }
+    void setLossOfConnectionTime(const unsigned long ms) { _locTime = ms; }
     
     /*!
       @brief Begin communication
@@ -198,14 +201,15 @@ class Communicator
     size_t numOfTransceivers() const { return _transceivers.size(); } //!< @brief Gets the number of registered transceivers
     ///@}
 
-    /// @name Peer
-    /// @{
-    static bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register peer
-    static void unregisterPeer(const MACAddress& addr); //!< @brief Unregister peer
-    static void clearPeer();                            //!< @brief Clear all peer
-    static int  numOfPeer();                            //!< @brief Number of registered peers
-    static bool existsPeer(const MACAddress& addr);     //!< @brief Exists peer?
-    /// @}
+    ///@name Peer
+    ///@warning Peer status is shared with ESP-NOW
+    ///@{
+    bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register peer
+    void unregisterPeer(const MACAddress& addr); //!< @brief Unregister peer
+    void clearPeer();                            //!< @brief Clear all peer
+    int  numOfPeer();                            //!< @brief Number of registered peers
+    bool existsPeer(const MACAddress& addr);     //!< @brief Exists peer?
+    ///@}
 
     /*!
       @brief Post data
@@ -222,21 +226,33 @@ class Communicator
       @param length Length of data
      */
     bool send(const uint8_t* peer_addr, const void* data, const uint8_t length);
+
+    //! @breif Notify transceivers
+    void notify(const Notify notify, const void* arg = nullptr);
+
+    template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
+            -> decltype(func(std::forward<Args>(args)...))
+    {
+        lock_guard lock(_sem);
+        return func(std::forward<Args>(args)...);
+    }
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
-    ///@note Create a pseudo send/receive loss condition
     ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
     ///@{
-    String debugInfo() const;                               //!< @brief Gets the information string
+    virtual String debugInfo() const; //!< @brief Gets the information string
     bool isEnableDebug() const     { return _debugEnable; } //!< @brief Are debugging features enabled?
     void enableDebug(const bool b) { _debugEnable = b;    } //!< @brief Enable/Disable debugging features
+    ///@}
+
+    ///@name Debugging features for Simulate communication failures
+    ///@{
     float debugSendLoss() const    { return _debugSendLoss; } //!< @brief Gets the sending losee
     float debugRecieveLoss() const { return _debugRecvLoss; } //!< @brief Gets the receiving losee
     void setDebugSendLoss(const float rate)    { _debugSendLoss = rate; } //!< @brief Set sending loss
     void setDebugReceiveLoss(const float rate) { _debugRecvLoss = rate; } //!< @brief Set receiving loss
     void setDebugLoss(const float rate)        { _debugSendLoss = _debugRecvLoss = rate; } //!< @brief Set sending and receiving loss percentage
-    //Caused once in a specified number of times
     ///@}
 #endif
     
@@ -247,11 +263,7 @@ class Communicator
 
     ///@name Callback
     ///@note Called from WiFi-task.
-    ///@note [Send] Too short interval between sending two ESP-NOW data may lead to disorder of sending callback function.
-    /// So, it is recommended that sending the next ESP-NOW data after the sending callback function of the previous sending has returned.
-    ///@note [Recv] The receiving callback function also runs from the Wi-Fi task. So, do not do lengthy operations in the callback function.
-    /// Instead, post the necessary data to a queue and handle it from a lower priority task.
-    /// @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html#send-esp-now-data
+    /// @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html
     ///@{
     static void callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status);
     void onSent(const MACAddress& addr, const esp_now_send_status_t status);
@@ -260,15 +272,16 @@ class Communicator
     ///@}
 
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& vec);
-    
+    void move_to_last(const uint8_t* peer_addr, std::vector<uint8_t>& vec);    
+
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
 
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
-    volatile bool _canSend{};
+    volatile bool _canSend{true};
     volatile bool _retry{};
-    unsigned long _sendTime{}, _lossOfConnectionTime{LOSS_OF_CONNECTION_TIME};
+    unsigned long _sentTime{}, _locTime{LOSS_OF_CONNECTION_TIME};
 
     MACAddress _addr{}; // Self address
     std::vector<Transceiver*> _transceivers;
@@ -308,17 +321,23 @@ class Transceiver
     explicit Transceiver(const uint8_t tid);
     virtual ~Transceiver();
 
+    ///@cond 0
     Transceiver(const Transceiver&) = delete;
     Transceiver& operator=(const Transceiver&) = delete;
+    ///@endcond
 
     ///@name Properties
     ///@{
     int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
-    inline uint64_t sequence() const { lock_guard _(_sem);  return _sequence; } //!< @brief Gets the sequence No.
-    inline uint64_t ack(const MACAddress& addr) const { lock_guard _(_sem); return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; } //!< @brief Gets the ack No
+    inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the sequence No.
+    inline uint64_t ack(const MACAddress& addr) const { return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; } //!< @brief Gets the ACK value
+    inline uint64_t sequence_with_lock() const { lock_guard _(_sem); return sequence(); } //!< @brief Gets the sequence No.
+    inline uint64_t ack_with_lock(const MACAddress& addr) const { lock_guard _(_sem); return ack(addr); } //!< @brief Gets the ACK value
+
     ///@}
 
-    ///@name Data transmission
+    ///@name Data transmission (Reliable)
+    ///@note Has mechanisms for transmission sequencing and arrival assurance
     ///@{
     /*!
       @brief Post data
@@ -327,7 +346,6 @@ class Transceiver
       @param length Length of the payload data if exists
       @note In the case of Post, data are combined.
       @note To reduce the number of transmissions when sending multiple data or transceivers.
-      @warnig 
      */
     bool postReliable(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     //! @brief Post to all peer
@@ -356,34 +374,52 @@ class Transceiver
     template<typename T> inline bool sendReliable(                        const T& data) { return sendReliable(nullptr,     &data ,sizeof(data)); }
     ///@}
 
-    /*!
-      @brief Receive data
-      @note Called from WiFi task, so be careful of exclusivity control, etc.
-      @sa with_lock
-    */
-    virtual void onReceive(const MACAddress& /*addr*/, const TransceiverHeader* /*data*/) {}
-    //! @brief Notifications from Communicator
-    virtual void onNotify(const Notify /*notify*/, void* arg = nullptr) { /* nop */ }
-    
+    ///@name Data transmission (Unreliable)
+    ///@note Parameters are the same as post/sendReliable
+    ///@{
+    bool postUnreliable(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);    
+    inline bool postUnreliable(                   const void* data = nullptr, const uint8_t length = 0) { return postUnreliable(nullptr, data, length); }
+    template<typename T> inline bool postUnreliable(const MACAddress& addr, const T& data) { return postUnreliable(addr.data(), &data ,sizeof(data)); }
+    template<typename T> inline bool postUnreliable(                        const T& data) { return postUnreliable(nullptr,     &data ,sizeof(data)); }
+    bool sendUnreliable(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    inline bool sendUnreliable(                   const void* data = nullptr, const uint8_t length = 0) { return sendUnreliable(nullptr, data, length); }
+    template<typename T> inline bool sendUnreliable(const MACAddress& addr, const T& data) { return sendUnreliable(addr.data(), &data ,sizeof(data)); }
+    template<typename T> inline bool sendUnreliable(                        const T& data) { return sendUnreliable(nullptr,     &data ,sizeof(data)); }
+    ///@}    
+   
     /*!
       @brief Call any function with lock
       @param Func Any functor
       @param args Arguments for functor
+      @warning The same binary semaphore is used inside the transceiver, so beware of deadlocks.
       @details Example
       @code{.cpp}
+      // Example in class functions
       class YourTransceiver : public Transceiver
       {
+        public:
           struct Payload { int value; };
-          explicit YourTransceiver(const uint8_t tid) : Transceiver(tid) {}         
+          explicit YourTransceiver(const uint8_t tid) : Transceiver(tid) {}
+          int value() const { return _value; }
+    
+        protected:
           virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override
           {
-              with_lock([&]() { _value = ((PayLoad*)data->payload())->value; });
+              with_lock([this](const TransceiverHeader* th) { this->_value = ((Payload*)th->payload())->value; }, data);
           }
           volatile int _value{};
       };
+
+      // Example of external use of the class
       YourTransceiver yt(1);
-      YourTransceiver::Payload pl = { 52; }
-      yt.send(pl);
+      void foo()
+      {
+          int arg;
+          auto ret = yt.with_lock([](const int v)
+          {
+              return v * yt.value();
+          }, arg);
+      }
       @endcode
      */
     template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
@@ -395,85 +431,38 @@ class Transceiver
 
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
-    ///@note Create a pseudo send/receive loss condition
     ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
     ///@{
-    String debugInfo() const;                               //!< @brief Gets the information string
+    virtual String debugInfo() const; //!< @brief Gets the information string
     ///@}
 #endif    
 
   protected:
-    virtual void update() {}
+    void build_ack_map();
+    virtual void update(const unsigned long ms) {}
 
-    uint8_t* make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length);
+    /*!
+      @brief Receiving callbacks
+      @warning The receiving callback function also runs from the Wi-Fi task,
+      @warning <em><strong>So, do not do lengthy operations in the callback function.</string></em>
+    */
+    virtual void onReceive(const MACAddress& /*addr*/, const TransceiverHeader* /*data*/) {}
+    //! @brief Notification callbacks
+    virtual void onNotify(const Notify /*notify*/, const void* arg = nullptr) { /* nop */ }
+
+    uint8_t* make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     void on_receive(const MACAddress& addr, const TransceiverHeader* data);
+
+    const std::map<MACAddress, uint64_t>& ack() const { return _ack; }
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
-    uint8_t _tid{}; // Transceiver unique identifier
+    const uint8_t _tid{}; // Transceiver unique identifier
     uint64_t _sequence{}; // send sequence
     std::map<MACAddress, uint64_t> _ack; // received sequence
 
     friend class Communicator;
 };
-
-#if 0
-class HeartbeatTransciver :  public Transceiver
-{
-  protected:
-    virtual void update() override;
-    virtual void onNotify(const Notify notify, void* arg) override;
-};
-
-class HandshakeTransceiver : public Transceiver
-{
-  public:
-    explicit HandshakeTransceiver(const uint8_t tid, const uint8_t maxPeer = 1) : Transceiver(tid), _maxPeer(maxPeer) { assert(maxPeer < ESP_NOW_MAX_TOTAL_PEER_NUM); }
-
-    inline bool isPrimary()    const { return _id == 0; }
-    inline bool isSecondary()  const { return _id > 0;  }
-    inline bool isIndecided()  const { return _id < 0;  }
-
-    inline int8_t identifier() const { return _id;      }
-#if 0
-    const MACAddress primaryAddress() const
-    {
-        return isPrimary() ? Communicator::instance().address()
-                : (isSecondary() ? _peer.front() : MACAddress());
-    }
-    size_t numOfSecondary() { return isSecondary() ? _peer.size() : 0; }
-    const std::vector<MACAddress>* secondaryAddress() const { return isPrimary() ? &_peer : nullptr; }
-#endif
-    
-    enum Command : uint8_t
-    {
-        DeclarePrimary,
-        ApplySecondary,
-        AcceptSecondary,
-        AckAccept,
-    };
-    struct Payload
-    {
-        Command command{};
-        uint16_t session{};
-        int8_t id{};
-    };
-    bool declarePrimary();
-    
-  protected:
-    bool postCommand(const MACAddress& addr);
-    virtual void onReceive(const MACAddress& addr, const uint8_t* data, int length);
-    
-  private:
-    static constexpr int8_t INVALID_ID = -1;
-    int8_t _id{INVALID_ID}; // 0 as primary, 1~ as secondary negative: inundecided
-    uint8_t _maxPeer{};
-    uint16_t _session{};
-    uint32_t _validSecondary{}; // bits (
-    std::vector<MACAddress> _peer{}; // [0]:primary [1]:others
-};
-#endif
-
 //
 }}
 #endif

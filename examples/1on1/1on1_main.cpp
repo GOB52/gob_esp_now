@@ -4,6 +4,7 @@
 */
 #include <M5Unified.h>
 #include <gob_esp_now.hpp>
+#include <gob_heartbeat_transceiver.hpp>
 #include <gob_unifiedButton.hpp> // for CoreS3
 #include <WiFi.h>
 
@@ -18,8 +19,9 @@ using namespace goblib::esp_now;
 namespace
 {
 constexpr uint8_t APP_ID = 12;
-constexpr uint8_t BUTTON_TRANSCEIVER_ID = 34;
-constexpr uint8_t COLOR_TRANSCEIVER_ID = 56;
+constexpr uint8_t HEART_BEAT_TRANSCEIVER_ID = 34;
+constexpr uint8_t BUTTON_TRANSCEIVER_ID = 56;
+constexpr uint8_t COLOR_TRANSCEIVER_ID = 78;
 
 MACAddress dest(TARGET_ADDR);
 
@@ -41,8 +43,7 @@ class ButtonTransceiver : public Transceiver
   public:
     explicit ButtonTransceiver(const uint8_t tid) : Transceiver(tid) {}
 
-    bool received() const { return with_lock([this](){ return _received; }); }
-
+    bool received() const { return _received; }
     void clear() { _received = false; }
     const ButtonData& data() const { return _data; }
     uint64_t rcount() const { return _count; }
@@ -60,11 +61,11 @@ class ButtonTransceiver : public Transceiver
         }, data);
     }
 
-    virtual void onNotify(const Notify notify, void* arg) override
+    virtual void onNotify(const Notify notify, const void* arg) override
     {
         if(notify == Notify::Disconnect)
         {
-            const MACAddress* addr = (const MACAddress*)arg;
+            auto addr = (const MACAddress*)arg;
             M5_LOGE("Connection lost %s", addr->toString().c_str());
         }
     }
@@ -80,8 +81,7 @@ class ColorTransceiver : public Transceiver
   public:
     explicit ColorTransceiver(const uint8_t tid) : Transceiver(tid) {}
 
-    bool received() const { return with_lock([this](){ return _received; }); }
-
+    bool received() const { return _received; }
     void clear() { _received = false; }
     uint16_t data() const { return _color; }
     uint64_t rcount() const { return _count; }
@@ -100,11 +100,11 @@ class ColorTransceiver : public Transceiver
         }, data);
     }
 
-    virtual void onNotify(const Notify notify, void* arg) override
+    virtual void onNotify(const Notify notify, const void* arg) override
     {
         if(notify == Notify::Disconnect)
         {
-            const MACAddress* addr = (const MACAddress*)arg;
+            auto addr = (const MACAddress*)arg;
             M5_LOGE("Connection lost %s", addr->toString().c_str());
         }
     }
@@ -122,6 +122,8 @@ class ColorTransceiver : public Transceiver
 
 ButtonTransceiver btnT(BUTTON_TRANSCEIVER_ID);
 ColorTransceiver colorT(COLOR_TRANSCEIVER_ID);
+HeartbeatTransceiver hbT(HEART_BEAT_TRANSCEIVER_ID);
+
 auto& lcd = M5.Display;
 goblib::UnifiedButton unifiedButton;
 }
@@ -142,14 +144,20 @@ void setup()
     WiFi.mode(WIFI_OFF);
     WiFi.mode(WIFI_STA);
 
+    auto before = esp_get_free_heap_size();
     auto& comm = Communicator::instance();
-    comm.begin(APP_ID); // Set unique application identifier
-    Communicator::registerPeer(dest);
-    Communicator::registerPeer(MACAddress("11:22:33:44:55:66")); // nonexistent address
+    comm.registerPeer(dest);
+    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address
     comm.registerTransceiver(&colorT);
     comm.registerTransceiver(&btnT);
+    comm.registerTransceiver(&hbT);
     //comm.setLossOfConnectionTime(1000 * 10);
-
+    comm.begin(APP_ID); // Set unique application identifier
+    if(Communicator::instance().address() < dest) { hbT.begin(); M5_LOGW("begin HB"); }
+    
+    auto after = esp_get_free_heap_size();
+    M5_LOGI("GEN space:%u", before - after);
+    
 #if !defined(NDEBUG)
     M5_LOGI("%s", comm.debugInfo().c_str());
 
@@ -188,13 +196,21 @@ void loop()
         M5_LOGI("Post btn:%x", d.btn);
         // Data accumulation(Send not yet).
 #if 1
-        if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update() 
+        if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
 #else
         if(!btnT.sendReliable(dest, d)) { M5_LOGE("Failed to send"); } // Send directly
 #endif
         last = d;
     }
 
+#if !defined(NDEBUG)
+    if(M5.BtnC.wasHold())
+    {
+        M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
+    }
+#endif
+    
+#if 0    
     // Change background color every 30 seconds and send
     // The sending side is assumed to be the side with the lower MACAddress.
     auto now = millis();
@@ -210,15 +226,9 @@ void loop()
         dirty = true;
     }
 
-#if !defined(NDEBUG)
-    if(M5.BtnC.wasHold())
-    {
-        M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
-    }
-#endif
 
     // Change to received background color.
-    if(colorT.received())
+    if(colorT.with_lock([](){ return colorT.received(); }))
     {
         colorT.with_lock([]()
         {
@@ -232,7 +242,8 @@ void loop()
         // Return ACK
         ///colorT.postReliable(dest);
     }
-
+#endif
+    
     // [*1] Send data in this function if posted.
     Communicator::instance().update(); 
 
@@ -243,7 +254,7 @@ void loop()
     
     // Draw the received button status.
     static ButtonData rd;
-    if(btnT.received())
+    if(btnT.with_lock([]() { return btnT.received(); }))
     {
         // Functions called by with_lock are thread-safe
         btnT.with_lock([]()
@@ -258,9 +269,9 @@ void loop()
 
     //
     lcd.setCursor(0,0);
-    lcd.printf("[B]S:%llu A:%llu R:%llu", btnT.sequence(), btnT.ack(dest), btnT.rcount());
+    lcd.printf("[B]S:%llu A:%llu R:%llu", btnT.sequence_with_lock(), btnT.ack_with_lock(dest), btnT.rcount());
     lcd.setCursor(0,26*1);
-    lcd.printf("[C]S:%llu A:%llu R:%llu", colorT.sequence(), colorT.ack(dest), colorT.rcount());
+    lcd.printf("[C]S:%llu A:%llu R:%llu", colorT.sequence_with_lock(), colorT.ack_with_lock(dest), colorT.rcount());
     lcd.setCursor(0,26*2);
     lcd.printf("Heap:%u", esp_get_free_heap_size());
     lcd.setCursor(0,26*3);
