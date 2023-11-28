@@ -8,10 +8,13 @@
 #include <gob_unifiedButton.hpp> // for CoreS3
 #include <WiFi.h>
 
-#if !defined(TARGET_ADDR)
-// Specify with compile options or define here.
-//#define TARGET_ADDR "12:34:56:67:9a:bc"
-#error "Need TARGET_ADDR defines is required. See also platformio.ini"
+#if !defined(DEVICE_A)
+#error "Need DEVICE_A defines is required. Specify in platformio.ini or write here."
+// #define DEVICE_A "12:34:56:78:9a:bc"
+#endif
+#if !defined(DEVICE_B)
+#error "Need DEVICE_B defines is required. Specify in platformio.ini or write here."
+// #define DEVICE_B "12:34:56:78:9a:bc"
 #endif
 
 using namespace goblib::esp_now;
@@ -23,7 +26,7 @@ constexpr uint8_t HEART_BEAT_TRANSCEIVER_ID = 34;
 constexpr uint8_t BUTTON_TRANSCEIVER_ID = 56;
 constexpr uint8_t COLOR_TRANSCEIVER_ID = 78;
 
-MACAddress dest(TARGET_ADDR);
+MACAddress dest;
 
 // Data structures for transmission and reception, and transceivers
 union ButtonData
@@ -46,7 +49,6 @@ class ButtonTransceiver : public Transceiver
     bool received() const { return _received; }
     void clear() { _received = false; }
     const ButtonData& data() const { return _data; }
-    uint64_t rcount() const { return _count; }
     
     // Transmitted data with APP_ID and Transceiver ID matching comes in. (Called from another task)
     virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override
@@ -57,7 +59,6 @@ class ButtonTransceiver : public Transceiver
             M5_LOGI("[RB]:%u:Btn:%x", th->rudp.sequence, pd->btn);
             this->_data = *pd;
             this->_received = true;
-            this->_count++;
         }, data);
     }
 
@@ -73,7 +74,6 @@ class ButtonTransceiver : public Transceiver
   private:
     ButtonData _data{};
     volatile bool _received{};
-    volatile uint64_t _count{};
 };
 
 class ColorTransceiver : public Transceiver
@@ -84,7 +84,6 @@ class ColorTransceiver : public Transceiver
     bool received() const { return _received; }
     void clear() { _received = false; }
     uint16_t data() const { return _color; }
-    uint64_t rcount() const { return _count; }
 
     // Transmitted data with APP_ID and Transceiver ID matching comes in. (Called from another task)
     virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override
@@ -96,7 +95,6 @@ class ColorTransceiver : public Transceiver
             M5_LOGI("[RC]:%u:Clr:%x", th->rudp.sequence, *pd);
             this->_color = *pd;
             this->_received = true;
-            this->_count++;
         }, data);
     }
 
@@ -110,15 +108,9 @@ class ColorTransceiver : public Transceiver
     }
     
   private:
-    uint16_t _color{};
+    volatile uint16_t _color{};
     volatile bool _received{};
-    volatile uint64_t _count{};
 };
-
-
-// TODO
-// 受信失敗時の再送要求機構 with SEQが飛んだ場合の対処
-// TODO
 
 ButtonTransceiver btnT(BUTTON_TRANSCEIVER_ID);
 ColorTransceiver colorT(COLOR_TRANSCEIVER_ID);
@@ -131,12 +123,6 @@ goblib::UnifiedButton unifiedButton;
 void setup()
 {
     M5_LOGI("Heap:%u", esp_get_free_heap_size());
-    //esp_log_level_set(goblib::esp_now::LIB_TAG, ESP_LOG_VERBOSE);
-    //esp_log_level_set(goblib::esp_now::LIB_TAG, ESP_LOG_DEBUG);
-    //esp_log_level_set(goblib::esp_now::LIB_TAG, ESP_LOG_WARN);
-    esp_log_level_set("*", ESP_LOG_NONE);
-    M5_LOGI("LogLevel:%u", esp_log_level_get(goblib::esp_now::LIB_TAG));
-    
     M5.begin();
     unifiedButton.begin(&lcd);
 
@@ -146,14 +132,27 @@ void setup()
 
     auto before = esp_get_free_heap_size();
     auto& comm = Communicator::instance();
+
+    if(MACAddress(DEVICE_A) == comm.address()) { dest.parse(DEVICE_B); }
+    if(MACAddress(DEVICE_B) == comm.address()) { dest.parse(DEVICE_A); }
+    M5_LOGI("  Self: %s", comm.address().toString().c_str());
+    M5_LOGI("Target: %s", dest.toString().c_str());
+    if(!dest)
+    {
+        M5_LOGE("Not the device at the address specified by define");
+        M5_LOGE("DEVICE_A:[%s] DEVICE_B:[%s]", DEVICE_A, DEVICE_B);
+        lcd.clear(TFT_RED);
+        while(1) { delay(10000); }
+    }
+
     comm.registerPeer(dest);
-    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address
+    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
     comm.registerTransceiver(&colorT);
     comm.registerTransceiver(&btnT);
     comm.registerTransceiver(&hbT);
     //comm.setLossOfConnectionTime(1000 * 10);
     comm.begin(APP_ID); // Set unique application identifier
-    if(Communicator::instance().address() < dest) { hbT.begin(); M5_LOGW("begin HB"); }
+    hbT.begin(Communicator::instance().address() < dest);
     
     auto after = esp_get_free_heap_size();
     M5_LOGI("GEN space:%u", before - after);
@@ -168,13 +167,10 @@ void setup()
     //comm.setDebugSendLoss(0.9f);
 #endif
     
-    lcd.setFont(&fonts::Font4);
-    unifiedButton.setFont(&fonts::Font2);
+    lcd.setFont(&fonts::Font2);
+    unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
     lcd.setTextColor(TFT_BLACK, TFT_DARKGREEN);
-
-    M5_LOGI("  Self: %s", comm.address().toString().c_str());
-    M5_LOGI("Target: %s", dest.toString().c_str());
 }
 
 void loop()
@@ -268,13 +264,16 @@ void loop()
     lcd.fillRect(16 + (64+16) * 2, 120, 64,32, rd.btnC ? TFT_WHITE : TFT_BLACK);
 
     //
-    lcd.setCursor(0,0);
-    lcd.printf("[B]S:%llu A:%llu R:%llu", btnT.sequence_with_lock(), btnT.ack_with_lock(dest), btnT.rcount());
-    lcd.setCursor(0,26*1);
-    lcd.printf("[C]S:%llu A:%llu R:%llu", colorT.sequence_with_lock(), colorT.ack_with_lock(dest), colorT.rcount());
-    lcd.setCursor(0,26*2);
+    uint64_t ts,rs,ack;
+    lcd.setCursor(8,0);
+    std::tie(ts, rs, ack) = btnT.with_lock([](){ return std::make_tuple(btnT.sequence(), btnT.sequence(dest), btnT.ack(dest)); });
+    lcd.printf("[B] S:%llu R:%llu A:%llu", ts, rs, ack);
+    lcd.setCursor(8,13*1);
+    std::tie(ts, rs, ack) = colorT.with_lock([](){ return std::make_tuple(colorT.sequence(), colorT.sequence(dest), colorT.ack(dest)); });
+    lcd.printf("[C] S:%llu R:%llu A:%llu", ts, rs, ack);
+    lcd.setCursor(8,13*2);
     lcd.printf("Heap:%u", esp_get_free_heap_size());
-    lcd.setCursor(0,26*3);
+    lcd.setCursor(8,13*3);
     lcd.printf("MAC:%s", Communicator::instance().address().toString(true).c_str());
 
     unifiedButton.draw(dirty);

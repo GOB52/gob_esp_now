@@ -37,7 +37,7 @@ namespace goblib {
  */
 namespace esp_now {
 
-extern const char LIB_TAG[]; //!< @brief Tag for logging
+constexpr char LIB_TAG[] = "gen"; //!< @brief Tag for logging
 
 /*!
   @struct lock_guard
@@ -189,8 +189,10 @@ class Communicator
     */
     bool begin(const uint8_t app_id);
     void end();
-    /*! @brief Update comminication
+    /*!
+      @brief Update comminicator
       @note Transmission of posted data is done here
+      @note Registered transceivers are also updated here
      */
     void update();
 
@@ -206,9 +208,14 @@ class Communicator
     ///@{
     bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register peer
     void unregisterPeer(const MACAddress& addr); //!< @brief Unregister peer
-    void clearPeer();                            //!< @brief Clear all peer
-    int  numOfPeer();                            //!< @brief Number of registered peers
-    bool existsPeer(const MACAddress& addr);     //!< @brief Exists peer?
+
+    /*!
+      @brief Clear all peer
+      @warning Cannot clear multicast address. Explicitly call unregisterPeer if you want to erase it.
+    */
+    void clearPeer();
+    uint8_t numOfPeer(); //!< @brief Number of registered peers
+    bool existsPeer(const MACAddress& addr); //!< @brief Exists peer?
     ///@}
 
     /*!
@@ -219,6 +226,12 @@ class Communicator
       @note Only stores data, actual transmission is done by update()
      */
     bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
+    //! @brief Post data with lock
+    bool post_with_lock(const uint8_t* peer_addr, const void* data, const uint8_t length)
+    {
+        lock_guard _(_sem);
+        return post(peer_addr, data, length);
+    }
     /*!
       @brief Send transceiver data
       @param peer_addr MAC address (send all unicast peer if nullptr)
@@ -226,16 +239,35 @@ class Communicator
       @param length Length of data
      */
     bool send(const uint8_t* peer_addr, const void* data, const uint8_t length);
+    //! @brief Send data with lock
+    bool send_with_lock(const uint8_t* peer_addr, const void* data, const uint8_t length)
+    {
+        lock_guard _(_sem);
+        return send(peer_addr, data, length);
+    }
 
-    //! @breif Notify transceivers
+    /*!
+      @brief Notify transceivers
+      @warning This function locks the transceiver internally, so beware of deadlocks
+     */
     void notify(const Notify notify, const void* arg = nullptr);
 
+    /*!
+      @brief Call any function with lock
+      @param Func Any functor
+      @param args Arguments for functor
+      @warning The same binary semaphore is used inside the communicator, so beware of deadlocks.
+    */
     template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
             -> decltype(func(std::forward<Args>(args)...))
     {
         lock_guard lock(_sem);
         return func(std::forward<Args>(args)...);
     }
+
+    //bool equalAck(const uint8_t seq, const MACAddress& addr);
+    //bool equalAck(const MACAddress& addr);
+
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
@@ -329,13 +361,16 @@ class Transceiver
     ///@name Properties
     ///@{
     int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
-    inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the sequence No.
-    inline uint64_t ack(const MACAddress& addr) const { return (_ack.count(addr) == 1) ? _ack.at(addr) : 0ULL; } //!< @brief Gets the ACK value
-    inline uint64_t sequence_with_lock() const { lock_guard _(_sem); return sequence(); } //!< @brief Gets the sequence No.
-    inline uint64_t ack_with_lock(const MACAddress& addr) const { lock_guard _(_sem); return ack(addr); } //!< @brief Gets the ACK value
-
+    inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
+    inline uint64_t sequence(const MACAddress& addr) const { return (_recvSeq.count(addr) == 1) ? _recvSeq.at(addr) : 0ULL; } //!< @brief Gets the received sequence No,
+    inline uint64_t ack(const MACAddress& addr) const { return (_recvAck.count(addr) == 1) ? _recvAck.at(addr) : 0ULL; } //!< @brief Gets the received ACK No,
     ///@}
 
+    //! @brief Reset sequence,ack...
+    void reset();
+    //! @brief Clear information about the specified address
+    void clear(const MACAddress& addr);
+    
     ///@name Data transmission (Reliable)
     ///@note Has mechanisms for transmission sequencing and arrival assurance
     ///@{
@@ -422,13 +457,13 @@ class Transceiver
       }
       @endcode
      */
-    template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
+    template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args)
             -> decltype(func(std::forward<Args>(args)...))
     {
         lock_guard lock(_sem);
         return func(std::forward<Args>(args)...);
     }
-
+    
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
     ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
@@ -438,29 +473,37 @@ class Transceiver
 #endif    
 
   protected:
-    void build_ack_map();
+    void build_peer_map();
+    /*!
+      @brief update transceiver
+      @note Call in Communicator::update
+      @warning Note that the communicator is locked
+     */
     virtual void update(const unsigned long ms) {}
 
     /*!
       @brief Receiving callbacks
       @warning The receiving callback function also runs from the Wi-Fi task,
-      @warning <em><strong>So, do not do lengthy operations in the callback function.</string></em>
+      @warning <em><strong>So, do not do lengthy operations in the callback function.</strong></em>
     */
     virtual void onReceive(const MACAddress& /*addr*/, const TransceiverHeader* /*data*/) {}
     //! @brief Notification callbacks
-    virtual void onNotify(const Notify /*notify*/, const void* arg = nullptr) { /* nop */ }
+    virtual void onNotify(const Notify /*notify*/, const void* /*arg*/) { /* nop */ }
 
     uint8_t* make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     void on_receive(const MACAddress& addr, const TransceiverHeader* data);
-
-    const std::map<MACAddress, uint64_t>& ack() const { return _ack; }
+    void on_notify(const Notify notify, const void* arg);
+    
+    const std::map<MACAddress, uint64_t>& sequences() const { return _recvSeq; }
+    const std::map<MACAddress, uint64_t>& acks() const { return _recvAck; }
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     const uint8_t _tid{}; // Transceiver unique identifier
     uint64_t _sequence{}; // send sequence
-    std::map<MACAddress, uint64_t> _ack; // received sequence
-
+    std::map<MACAddress, uint64_t> _recvSeq; // received sequence no
+    std::map<MACAddress, uint64_t> _recvAck; // received ack no
+    
     friend class Communicator;
 };
 //
