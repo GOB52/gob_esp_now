@@ -10,33 +10,6 @@ using goblib::esp_now::vmap;
 
 auto rng = std::default_random_engine {};
 
-struct Foo
-{
-    explicit Foo(int v) : value(v) {}
-    Foo(const Foo& b) { /*M5_LOGI("copy");*/ value = b.value; }
-    Foo(Foo&& b) noexcept{ /*M5_LOGW("move");*/ value = b.value; }
-    Foo& operator=(const Foo& b) { /*M5_LOGI("copy=");*/ if(this != &b) { value = b.value;}  return *this; }
-    Foo& operator=(Foo&& b) { /*M5_LOGI("move=");*/ if(this != &b) { value = b.value;}  return *this; }
-
-    bool operator==(const Foo& b) const { return value == b.value; }
-    bool operator!=(const Foo& b) const { return !(value == b.value); }
-    bool operator<(const Foo& b) const { return value < b.value; }
-
-    int value{};
-};
-
-
-class profile
-{
-  public:
-    explicit profile(int64_t& out) : _save(out) { _start_at = esp_timer_get_time(); }
-    ~profile() {_save = esp_timer_get_time() - _start_at; }
-  private:
-    int64_t _start_at{};
-    int64_t& _save;
-};
-
-
 TEST(vmap, compatibility)
 {
     std::map<int,int> s_map;
@@ -101,47 +74,83 @@ TEST(vmap, compatibility)
     }
     EXPECT_EQ(s_map.find(20)->first, v_map.find(20)->first);
 
+    // count
+    EXPECT_EQ(s_map.count(1), s_map.count(1));
+    EXPECT_EQ(s_map.count(15), s_map.count(15));
+    EXPECT_EQ(s_map.count(-100), s_map.count(-100));
+
+    // emplace
+    // Not exists
+    auto rs = s_map.emplace(15, 30);
+    auto rv = v_map.emplace(15, 30);
+    EXPECT_EQ(rs.first->first, rv.first->first);   // iterator
+    EXPECT_EQ(rs.second, rv.second); // inserted? bool
+    EXPECT_EQ(s_map.size(), v_map.size());
+    // Exists
+    rs = s_map.emplace(60, 120);
+    rv = v_map.emplace(60, 120);
+    EXPECT_EQ(rs.first->first, rv.first->first);   // iterator
+    EXPECT_EQ(rs.second, rv.second); // inserted? bool
+    EXPECT_EQ(s_map.size(), v_map.size());
+
+    // iterator
+    {
+        auto sbeg = s_map.begin();
+        auto send = s_map.end();
+        --send;
+        auto vbeg = v_map.begin();
+        auto vend = v_map.end();
+        --vend;
+        EXPECT_EQ(sbeg->first, vbeg->first);
+        EXPECT_EQ(send->first, vend->first);
+    }
+    {
+        auto sbeg = s_map.rbegin();
+        auto send = s_map.rend();
+        --send;
+        auto vbeg = v_map.rbegin();
+        auto vend = v_map.rend();
+        --vend;
+        EXPECT_EQ(sbeg->first, vbeg->first);
+        EXPECT_EQ(send->first, vend->first);
+    }
+    
     // clear
     s_map.clear();
-    v_map.claer();
+    v_map.clear();
     EXPECT_EQ(s_map.empty(), v_map.empty());
 }
 
-
-
-
 #if 0
-TEST(vmap,t)
+struct Foo
 {
-    vmap<int,int> v_map;
+    explicit Foo(int v) : value(v) {}
+    Foo(const Foo& b) { /*M5_LOGI("copy");*/ value = b.value; }
+    Foo(Foo&& b) noexcept{ /*M5_LOGW("move");*/ value = b.value; }
+    Foo& operator=(const Foo& b) { /*M5_LOGI("copy=");*/ if(this != &b) { value = b.value;}  return *this; }
+    Foo& operator=(Foo&& b) { /*M5_LOGI("move=");*/ if(this != &b) { value = b.value;}  return *this; }
 
-    v_map[1000] = 1000;
-    v_map[100] = 100;
-    v_map[10] = 10;
-    for(auto& e : v_map) { M5_LOGW("%d", e.first); }
+    bool operator==(const Foo& b) const { return value == b.value; }
+    bool operator!=(const Foo& b) const { return !(value == b.value); }
+    bool operator<(const Foo& b) const { return value < b.value; }
 
-    //v_map.sort();
-    //for(auto& e : v_map) { M5_LOGW("%d", e.first); }
-    
-    auto it = v_map.find2(99);
-    M5_LOGI("99: %d", std::distance(v_map.begin(),it)); // 0
+    int value{};
+};
 
-    it = v_map.find(100);
-    M5_LOGI("100 f: %d", std::distance(v_map.begin(),it)); //?
-    it = v_map.find2(100);
-    M5_LOGI("100 f2: %d", std::distance(v_map.begin(),it)); //?
-    
-    it = v_map.find2(101);
-    M5_LOGI("101: %d", std::distance(v_map.begin(),it)); //1
-}
-#endif
+class profile
+{
+  public:
+    explicit profile(int64_t& out) : _save(out) { _start_at = esp_timer_get_time(); }
+    ~profile() {_save = esp_timer_get_time() - _start_at; }
+  private:
+    int64_t _start_at{};
+    int64_t& _save;
+};
 
-#if 0
+#define RSIZE (3000)
+//#define RSIZE (20)
 
-//#define RSIZE (1024 * 2)
-#define RSIZE (20)
-
-TEST(vmap, benchmark))
+TEST(vmap, benchmark)
 {
     int64_t tm;
     std::map<Foo, int> s_map;
@@ -150,7 +159,7 @@ TEST(vmap, benchmark))
     for(int i=0;i<RSIZE;++i) { rv.emplace_back(esp_random() & 0xFFFF); }
     std::shuffle(rv.begin(),rv.end(), rng);
 
-//
+    //
     auto mem = esp_get_free_heap_size();
     {
         profile _(tm);
@@ -171,14 +180,11 @@ TEST(vmap, benchmark))
     }
     M5_LOGI("vmap[]= tm:%lld mem:%u", tm, mem - esp_get_free_heap_size());
 
-
     for(auto& e : rv)
     {
         Foo f(e);
         EXPECT_EQ(s_map[f],v_map[f]);
     }
-
-
     
     // find()
     {
@@ -252,20 +258,39 @@ TEST(vmap, benchmark))
     //    for(auto& e : v_map) { M5_LOGW("V:%5d", e.first.value); }
 }
 #endif
-
 /*
-[   337][I][test_vmap.cpp:55] TestBody(): std::map[]= tm:14777 mem:40680
-[   338][I][test_vmap.cpp:65] TestBody(): vmap[]= tm:1177 mem:8208
-[   341][I][test_vmap.cpp:75] TestBody(): std::map find:976
-[   348][I][test_vmap.cpp:83] TestBody(): vmap find:1883
-[   352][I][test_vmap.cpp:110] TestBody(): std::map for-auto:204
-[   359][I][test_vmap.cpp:116] TestBody(): std::map for-auto:53
-[   371][I][test_vmap.cpp:126] TestBody(): std::map erase:5994
-[   391][I][test_vmap.cpp:135] TestBody(): std::map erase:19424
+  On Core2
+
+#define RSIZE (3000)
+
+[   389][I][test_vmap.cpp:135] TestBody(): std::map[]= tm:56976 mem:117096
+[   504][I][test_vmap.cpp:145] TestBody(): vmap[]= tm:114246 mem:32784    <<== Memory efficient, Add is slow.
+
+[   512][I][test_vmap.cpp:161] TestBody(): std::map find:1606
+[   514][I][test_vmap.cpp:169] TestBody(): vmap find:2061 <<== Search is moderately fast
+
+[   517][I][test_vmap.cpp:179] TestBody(): std::map at:2457
+[   523][I][test_vmap.cpp:187] TestBody(): vmap at:3076 <<== Search is moderately fast
+
+[   526][I][test_vmap.cpp:194] TestBody(): std::map for-auto:592
+[   532][I][test_vmap.cpp:200] TestBody(): std::map for-auto:147 <<== Iteration is fast
+
+[   557][I][test_vmap.cpp:210] TestBody(): std::map erase:17743
+[   670][I][test_vmap.cpp:219] TestBody(): std::map erase:113166 <<== Erase is very slow (due to high memory copy)
+
+#define RSIZE (20)
+
+[   329][I][test_vmap.cpp:135] TestBody(): std::map[]= tm:298 mem:800
+[   335][I][test_vmap.cpp:145] TestBody(): vmap[]= tm:131 mem:272 <<==
+[   343][I][test_vmap.cpp:161] TestBody(): std::map find:660
+[   349][I][test_vmap.cpp:169] TestBody(): vmap find:1111 <==
+[   354][I][test_vmap.cpp:179] TestBody(): std::map at:10
+[   360][I][test_vmap.cpp:187] TestBody(): vmap at:12 <== 
+[   366][I][test_vmap.cpp:194] TestBody(): std::map for-auto:9
+[   373][I][test_vmap.cpp:200] TestBody(): std::map for-auto:2 <==
+[   379][I][test_vmap.cpp:210] TestBody(): std::map erase:118
+[   386][I][test_vmap.cpp:219] TestBody(): std::map erase:20 <==
+
+The larger the number of elements, the more pronounced the difference in memory usage.
 */
-// かくかんすうがごかんせいあるか
-/*
-
-
- */
 

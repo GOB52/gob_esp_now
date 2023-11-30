@@ -15,7 +15,6 @@ namespace goblib { namespace esp_now {
   @brief std::map-like map class implemented with std::vector
   @note Adding an element causes the element to be sorted by the value of key (for binary search)
  */
-
 template <typename Key, typename T> class vmap
 {
   public:
@@ -28,13 +27,11 @@ template <typename Key, typename T> class vmap
     using const_iterator = typename container_type::const_iterator;
     using reverse_iterator = typename container_type::reverse_iterator;
     using const_reverse_iterator = typename container_type::const_reverse_iterator;
-    
-public:
+
     vmap() = default;
 
-    ///@name
+    ///@name Element access 
     ///@{
-    //    inline T& at(const key_type& key) { return const_cast<T&>(static_cast<const decltype(*this)&>(*this).at(key)); }
     T& at(const key_type& key)
     {
         auto it = find(key);
@@ -48,16 +45,12 @@ public:
         if (it != _v.cend() && it->first == key) { return it->second; }
         else
         {
-
-#if 0
 #if defined(__EXCEPTIONS)
         throw std::out_of_range("vmap.at");
 #else
         assert(false && "out_of_range");
         abort();
 #endif
-#endif
-        return _v.front().second;
         }
     }
     T& operator[](const key_type& key)
