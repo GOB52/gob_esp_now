@@ -13,7 +13,7 @@ namespace goblib { namespace esp_now {
   @brief Transceiver for heartbeat (Alive monitoring)  
   If no ACK is returned within twice the specified interval, the connection is considered lost.
 */
-class HeartbeatTransceiver :  public Transceiver
+class HeartbeatTransceiver :public Transceiver
 {
   public:
     explicit HeartbeatTransceiver(const uint8_t tid) : Transceiver(tid) {}
@@ -42,8 +42,15 @@ class HeartbeatTransceiver :  public Transceiver
     void post_ack(const MACAddress& addr);
 
     static constexpr unsigned long DEFAULT_INTERVAL = 1000 * 10;
-    unsigned long _sent{}, _sentBasis{};
-    std::map<MACAddress,unsigned long> _recv{};
+
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    using recv_map_t = std::map<MACAddress, unsigned long>;
+#else
+    using recv_map_t = vmap<MACAddress, unsigned long>;
+#endif
+    recv_map_t _recv{};
+    struct Sent { unsigned long time; uint64_t sequence; };
+    std::vector<Sent> _sent;
 
   private:
     bool _began{}, _sender{};

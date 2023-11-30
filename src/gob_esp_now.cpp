@@ -275,7 +275,8 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     if(ret != ESP_OK)
     {
         LIB_LOGE("Failed to esp_now_send %s %d:%s", MACAddress(peer_addr).toString().c_str(), ret, err2cstr(ret));
-        if(peer_addr) { vec.clear(); }
+        //if(peer_addr) { vec.clear(); }
+        vec.clear();
         return false;
     }
 
@@ -617,8 +618,9 @@ void Transceiver::build_peer_map()
     }
 }
 
-uint8_t* Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
+uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
+    uint64_t seq{};
     // Header
     TransceiverHeader* th = (TransceiverHeader*)obuf;
     th->tid = _tid;
@@ -630,6 +632,7 @@ uint8_t* Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
         {
             lock_guard _(_sem);
             th->rudp.sequence = (++_sequence) & 0xFF;
+            seq = _sequence;
             th->rudp.ack = peer_addr ? (_recvSeq[MACAddress(peer_addr)] & 0xFF) : 0x00;
             LIB_LOGV("set:%s :%02x %u/%u | %llu/%llu",
                      MACAddress(peer_addr).toString().c_str(),
@@ -639,7 +642,7 @@ uint8_t* Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
         }
     }
     if(data && length) { std::memcpy(obuf + sizeof(*th), data, length); } // Append payload
-    return obuf;
+    return seq;
 }
                    
 #if 0

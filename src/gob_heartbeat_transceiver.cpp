@@ -34,8 +34,8 @@ void HeartbeatTransceiver::end()
     with_lock([this]()
     {
         this->_began = false;
-        for(auto& it : this->_recv) { it.second = 0; }
-        this->_sent = this->_sentBasis = 0;
+        this->_recv.clear();
+        this->_sent.clear();
         this->reset();
     });
 }
@@ -47,9 +47,19 @@ void HeartbeatTransceiver::update(const unsigned long ms)
     if(_sender) { update_sender(ms);   }
     else        { update_receiver(ms); }
 
-    // Check ACK receive time
-    if(!_sentBasis) { return; }
-
+    // Have all ACK of the specified sequence number been received?
+#if 0
+    auto ret = with_lock([this]()
+    {
+        if(this->_sent.empty()) { return true; }
+        if(this->received(this->_sent.front().sequence))
+        {
+            _all_ack = this->_sent.front().sequence;
+            _sent.pop_front();
+        }
+    });
+#endif
+    
     MACAddress addr = with_lock([this, &ms]()
     {
         auto& acks = this->acks();
@@ -77,8 +87,7 @@ void HeartbeatTransceiver::update(const unsigned long ms)
 
 void HeartbeatTransceiver::update_sender(const unsigned long ms)
 {
-    // Transmission at regular intervals
-    if(ms > _sent + _interval)
+    if(Communicator::instance().numOfPeer() > 0 && (_sent.empty() || ms > _sent.back().time + _interval))
     {
         // TODO:返答がない場合
         post_heart_beat(ms);
@@ -95,12 +104,11 @@ void HeartbeatTransceiver::post_heart_beat(const unsigned long ms)
 
     uint8_t buf[sizeof(TransceiverHeader)];
     auto pa = (bool)_addr ? _addr.data() : nullptr; // specific target or all peer.
-    make_data(buf, RUDP::Flag::NUL, pa);
+    auto seq = make_data(buf, RUDP::Flag::NUL, pa);
     Communicator::instance().post((bool)_addr ? _addr.data() : nullptr, buf, sizeof(buf));
 
     LIB_LOGD("[HBT]:S %u %lu", ((TransceiverHeader*)buf)->rudp.sequence, ms);
-    _sent = ms;
-    if(!_sentBasis) { _sentBasis = _sent; }
+    _sent.emplace_back(Sent{ms, seq});
 }
 
 void HeartbeatTransceiver::post_ack(const MACAddress& addr)
@@ -136,6 +144,7 @@ void HeartbeatTransceiver::onNotify(const Notify notify, const void* arg)
     Communicator::instance().unregisterPeer(*paddr);
     with_lock([this,&paddr]()
     {
+        this->_sent.clear();
         this->_recv.erase(*paddr);
     });
 }

@@ -18,12 +18,17 @@
 #include <initializer_list>
 #include <memory>
 #include <vector>
-#include <map>
 #include <FreeRTOS/freeRTOS.h>
 #include <FreeRTOS/semphr.h>
 #include <esp_now.h>
 #include <WString.h>
 #include "gob_mac_address.hpp"
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+# pragma messgae "Using std::map"
+# include <map>
+#else
+#include "internal/gob_esp_now_vmap.hpp"
+#endif
 
 /*!
   @namespace goblib
@@ -154,7 +159,7 @@ struct TransceiverHeader
   @enum Notify
   @brief Notify type
 */
-enum Notify : uint8_t
+enum class Notify : uint8_t
 {
     Disconnect,     //!< @brief Actively disconnected
     ConnectionLost, //!< @brief Connection lost
@@ -169,6 +174,7 @@ class Transceiver;
  */
 class Communicator
 {
+
   public:
     static Communicator& instance();
     
@@ -320,7 +326,13 @@ class Communicator
 
     MACAddress _lastAddr{};
     std::vector<uint8_t> _lastData{};
-    std::map<MACAddress, std::vector<uint8_t>> _queue;
+
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
+#else
+    using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
+#endif
+    queue_map_t _queue;
 
 #if !defined(NDEBUG)
     bool _debugEnable{};
@@ -490,19 +502,25 @@ class Transceiver
     //! @brief Notification callbacks
     virtual void onNotify(const Notify /*notify*/, const void* /*arg*/) { /* nop */ }
 
-    uint8_t* make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
     void on_receive(const MACAddress& addr, const TransceiverHeader* data);
     void on_notify(const Notify notify, const void* arg);
     
-    const std::map<MACAddress, uint64_t>& sequences() const { return _recvSeq; }
-    const std::map<MACAddress, uint64_t>& acks() const { return _recvAck; }
+
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    using seq_map_t = std::map<MACAddress, uint64_t>;
+#else
+    using seq_map_t = vmap<MACAddress, uint64_t>;
+#endif
+    const seq_map_t& sequences() const { return _recvSeq; }
+    const seq_map_t& acks() const { return _recvAck; }
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     const uint8_t _tid{}; // Transceiver unique identifier
     uint64_t _sequence{}; // send sequence
-    std::map<MACAddress, uint64_t> _recvSeq; // received sequence no
-    std::map<MACAddress, uint64_t> _recvAck; // received ack no
+    seq_map_t _recvSeq; // received sequence no
+    seq_map_t _recvAck; // received ack no
     
     friend class Communicator;
 };

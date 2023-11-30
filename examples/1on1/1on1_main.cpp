@@ -61,13 +61,12 @@ class ButtonTransceiver : public Transceiver
             this->_received = true;
         }, data);
     }
-
     virtual void onNotify(const Notify notify, const void* arg) override
     {
         if(notify == Notify::Disconnect)
         {
             auto addr = (const MACAddress*)arg;
-            M5_LOGE("Connection lost %s", addr->toString().c_str());
+            M5_LOGE("Disconnect", addr->toString().c_str());
         }
     }
     
@@ -97,16 +96,6 @@ class ColorTransceiver : public Transceiver
             this->_received = true;
         }, data);
     }
-
-    virtual void onNotify(const Notify notify, const void* arg) override
-    {
-        if(notify == Notify::Disconnect)
-        {
-            auto addr = (const MACAddress*)arg;
-            M5_LOGE("Connection lost %s", addr->toString().c_str());
-        }
-    }
-    
   private:
     volatile uint16_t _color{};
     volatile bool _received{};

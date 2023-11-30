@@ -41,7 +41,7 @@ class MACAddress
     explicit MACAddress(const char* str) { if(str) { parse(str); } }
     explicit MACAddress(const esp_mac_type_t mt) { get(mt); }
     MACAddress(const MACAddress& x) { _addr64 = x._addr64; }
-    MACAddress(MACAddress&& x)      { _addr64 = x._addr64; x._addr64 = 0; }
+    MACAddress(MACAddress&& x) noexcept { _addr64 = x._addr64; x._addr64 = 0; }
     /// @}
 
     ///@name Assignment
@@ -51,7 +51,7 @@ class MACAddress
         if(this != &x) { _addr64 = x._addr64; }
         return *this;
     }
-    MACAddress& operator=(MACAddress&& x)
+    MACAddress& operator=(MACAddress&& x) noexcept
     {
         if(this != &x) { _addr64 = x._addr64; x._addr64 = 0; }
         return *this;
@@ -90,10 +90,6 @@ class MACAddress
     inline uint8_t        operator[](size_t i) const&& { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return std::move(_addr[i]); }
     //! @brief direct access to the underlying array 
     inline constexpr const uint8_t* data() const { return _addr; }
-#if 0
-    //! @brief direct access to the underlying array 
-    inline uint8_t* data() { return _addr) }
-#endif
     /// @}
 
     /*!
@@ -109,7 +105,7 @@ class MACAddress
       @brief Outputs as a String, such as "fe:dc:ba:98:76:54"
       @param mask Mask upper address if true
      */
-    String toString(const bool mask = false) const; 
+    String toString(const bool mask = false) const;
 
     /// @cond 0
     friend bool operator==(const MACAddress& a, const MACAddress& b);
@@ -117,7 +113,7 @@ class MACAddress
     friend bool operator< (const MACAddress& a, const MACAddress& b);
     /// @endcond
 
-    //private:
+  private:
     union
     {
         uint64_t _addr64{}; // Using higher 48 bits

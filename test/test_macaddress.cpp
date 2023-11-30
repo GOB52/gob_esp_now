@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <gob_mac_address.hpp>
+#include "gob_mac_address.hpp"
 
 using goblib::esp_now::MACAddress;
 
