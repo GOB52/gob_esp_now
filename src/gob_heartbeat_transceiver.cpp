@@ -44,22 +44,61 @@ void HeartbeatTransceiver::update(const unsigned long ms)
 {
     if(!_began) { return; }
 
-    if(_sender) { update_sender(ms);   }
-    else        { update_receiver(ms); }
-
     // Have all ACK of the specified sequence number been received?
-#if 0
-    auto ret = with_lock([this]()
+    with_lock([this]()
     {
-        if(this->_sent.empty()) { return true; }
-        if(this->received(this->_sent.front().sequence))
+        uint64_t acked{};
+        for(auto it = _sent.crbegin(); it != _sent.crend(); ++it)
         {
-            _all_ack = this->_sent.front().sequence;
-            _sent.pop_front();
+            if(this->received(it->sequence)) { acked = it->sequence; break; }
         }
+        if(!acked) return;
+
+        auto it = std::remove_if(_sent.begin(), _sent.end(), [&acked](const Sent& s) { return s.sequence <= acked; });
+        _sent.erase(it, _sent.end());
+        this->_acked = acked;
+        LIB_LOGD("[HBT]:acked %llu", acked);
     });
-#endif
     
+    if(_sender) { update_sender  (ms); }
+    else        { update_receiver(ms); }
+}
+
+void HeartbeatTransceiver::update_sender(const unsigned long ms)
+{
+    if(Communicator::instance().numOfPeer() > 0 && ms > _lastSent + _interval)
+    {
+        post_heart_beat(ms);
+    }
+    // If no response is received _ccl times, the connection is considered lost.
+    MACAddress addr = with_lock([this]()
+    {
+        if(!_sent.empty())
+        {
+            auto& acks = this->acks();
+            //LIB_LOGV("acks:%zu", acks.size());
+            for(auto& it : acks)
+            {
+                if(!(it.first)
+                   || !it.first.isUnicast()
+                   || !_recv.count(it.first) 
+                   || ((bool)_addr && _addr != it.first)) { continue; }
+                //LIB_LOGV("  %s", it.first.toString().c_str());
+                if(_sent.back().sequence - it.second  > this->_ccl)
+                {
+                    LIB_LOGD("last seq:%llu acked:%llu", _sent.back().sequence, it.second);
+                    return it.first;
+                }
+            }
+        }
+        return MACAddress();
+    });
+    if((bool)addr) { Communicator::instance().notify(Notify::ConnectionLost, &addr); }
+}
+
+void HeartbeatTransceiver::update_receiver(const unsigned long ms)
+{
+    // Receiver considers connection lost if NUL is not received for more than twice the interval
     MACAddress addr = with_lock([this, &ms]()
     {
         auto& acks = this->acks();
@@ -85,19 +124,6 @@ void HeartbeatTransceiver::update(const unsigned long ms)
     if((bool)addr) { Communicator::instance().notify(Notify::ConnectionLost, &addr); }
 }
 
-void HeartbeatTransceiver::update_sender(const unsigned long ms)
-{
-    if(Communicator::instance().numOfPeer() > 0 && (_sent.empty() || ms > _sent.back().time + _interval))
-    {
-        // TODO:返答がない場合
-        post_heart_beat(ms);
-    }
-}
-
-void HeartbeatTransceiver::update_receiver(const unsigned long ms)
-{
-}
-
 void HeartbeatTransceiver::post_heart_beat(const unsigned long ms)
 {
     if(Communicator::instance().numOfPeer() == 0) { return; }
@@ -109,6 +135,7 @@ void HeartbeatTransceiver::post_heart_beat(const unsigned long ms)
 
     LIB_LOGD("[HBT]:S %u %lu", ((TransceiverHeader*)buf)->rudp.sequence, ms);
     _sent.emplace_back(Sent{ms, seq});
+    _lastSent = ms;
 }
 
 void HeartbeatTransceiver::post_ack(const MACAddress& addr)
@@ -138,6 +165,8 @@ void HeartbeatTransceiver::onReceive(const MACAddress& addr, const TransceiverHe
 void HeartbeatTransceiver::onNotify(const Notify notify, const void* arg)
 {
     if(notify != Notify::ConnectionLost) { return; }
+
+    if(!arg) { LIB_LOGE("illegal arg"); return; }
 
     auto paddr = (MACAddress*)arg;
     LIB_LOGI("CONNECTION LOST: %s", paddr->toString().c_str());

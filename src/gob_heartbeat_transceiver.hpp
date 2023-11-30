@@ -42,6 +42,10 @@ class HeartbeatTransceiver :public Transceiver
     void post_ack(const MACAddress& addr);
 
     static constexpr unsigned long DEFAULT_INTERVAL = 1000 * 10;
+    static constexpr uint8_t DEFAULT_CONSIDER_CONNECTION_LOST = 4;
+
+  private:    
+    struct Sent { unsigned long time; uint64_t sequence; };
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
     using recv_map_t = std::map<MACAddress, unsigned long>;
@@ -49,12 +53,11 @@ class HeartbeatTransceiver :public Transceiver
     using recv_map_t = vmap<MACAddress, unsigned long>;
 #endif
     recv_map_t _recv{};
-    struct Sent { unsigned long time; uint64_t sequence; };
     std::vector<Sent> _sent;
-
-  private:
     bool _began{}, _sender{};
-    unsigned long _interval{DEFAULT_INTERVAL};
+    uint64_t _acked{};
+    unsigned long _interval{DEFAULT_INTERVAL}, _lastSent{};
+    uint8_t _ccl{DEFAULT_CONSIDER_CONNECTION_LOST};
     MACAddress _addr{};
 };
 //

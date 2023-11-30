@@ -22,9 +22,11 @@ template <typename Key, typename T> class vmap
     using container_type = std::vector<value_type>;
     using key_type = Key;
     using mapped_type = T;
-    using size_type = typename container_type::size_type;
+    using reference = value_type&;
+    using const_reference =  const value_type&;
     using iterator = typename container_type::iterator;
     using const_iterator = typename container_type::const_iterator;
+    using size_type = typename container_type::size_type;
     using reverse_iterator = typename container_type::reverse_iterator;
     using const_reverse_iterator = typename container_type::const_reverse_iterator;
 

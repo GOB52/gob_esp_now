@@ -154,10 +154,12 @@ void Communicator::update()
     
     if(!_canSend) { return; }
 
+    // esp_now?send onSent FAILED に対しては再送せず
+    // Transceiver uodate で処理すべきかと....
+#if 0
     // Retry send last data to last destination
     if(false && _retry)
     {
-#if 0
         // Connection lost?
         if(_sentTime && (ms - _sentTime) > _locTime)
         {
@@ -191,9 +193,6 @@ void Communicator::update()
         }
     }
 }
-
-// TODO:Send のみ非Transceiver あり?
-// TransceiverHader* th にすべきでは?
 
 // Post
 bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_t length)
@@ -495,7 +494,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                 uint64_t seq = t->with_lock([&t,&addr](){ return t->sequence(addr); });
                 if(modify_uint64(seq, th->rudp.sequence) > seq)
                 {
-                    // seq + 1 より上なら飛んでいる
+                    // seq + 1 より上なら飛んでいる?
                     t->on_receive(addr, th);
                     t->onReceive(addr, th);
                 }

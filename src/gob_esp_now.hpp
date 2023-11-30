@@ -158,6 +158,11 @@ struct TransceiverHeader
 /*!
   @enum Notify
   @brief Notify type
+  notify and argument  Correspondence Chart for notify(), onNotify()
+  | Notify | Argument |
+  | --- | --- |
+  | Disconnect | const MACAddress* |
+  | ConnectionLost | const MACAddress* |  
 */
 enum class Notify : uint8_t
 {
@@ -270,10 +275,6 @@ class Communicator
         lock_guard lock(_sem);
         return func(std::forward<Args>(args)...);
     }
-
-    //bool equalAck(const uint8_t seq, const MACAddress& addr);
-    //bool equalAck(const MACAddress& addr);
-
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
@@ -340,16 +341,6 @@ class Communicator
 #endif
 };
 
-/*
-TODO:
-  Transceiver::update  必要
-* RUDP 受け取って、送るものがない場合に一定期間で ACK のみ返したいので
-* HeartbeatTransceiver 作って一定タイミングで勝手にハートビートしたい
-_ack[addr] は seq が飛んだ場合の対処する
-
-
-*/
-
 /*!
    @class Transceiver
    @brief Post and receive data each.
@@ -376,6 +367,19 @@ class Transceiver
     inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
     inline uint64_t sequence(const MACAddress& addr) const { return (_recvSeq.count(addr) == 1) ? _recvSeq.at(addr) : 0ULL; } //!< @brief Gets the received sequence No,
     inline uint64_t ack(const MACAddress& addr) const { return (_recvAck.count(addr) == 1) ? _recvAck.at(addr) : 0ULL; } //!< @brief Gets the received ACK No,
+    //! @brief Was the specified sequence received by all peers?
+    bool received(const uint64_t seq)
+    {
+        return std::all_of(_recvAck.begin(), _recvAck.end(), [&seq](decltype(_recvAck)::const_reference a)
+        {
+            return seq <= a.second || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
+        });
+    }
+    //! @brief Was the specified sequence received at the specified peer?
+    bool received(const uint64_t seq, const MACAddress& addr)
+    {
+        return seq <= _recvAck[addr];
+    }
     ///@}
 
     //! @brief Reset sequence,ack...
