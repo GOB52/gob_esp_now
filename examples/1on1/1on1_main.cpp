@@ -55,10 +55,13 @@ class ButtonTransceiver : public Transceiver
     {
         with_lock([this](const TransceiverHeader* th)
         {
-            auto pd = (ButtonData*)th->payload();
-            M5_LOGI("[RB]:%u:Btn:%x", th->rudp.sequence, pd->btn);
-            this->_data = *pd;
-            this->_received = true;
+            if(th->hasPayload())
+            {
+                auto pd = (ButtonData*)th->payload();
+                M5_LOGI("[RB]:%u:Btn:%x", th->rudp.sequence, pd->btn);
+                this->_data = *pd;
+                this->_received = true;
+            }
         }, data);
     }
     virtual void onNotify(const Notify notify, const void* arg) override
@@ -89,11 +92,14 @@ class ColorTransceiver : public Transceiver
     {
         with_lock([this](const TransceiverHeader* th)
         {
-            M5_LOGD("Clr");
-            auto pd = (uint16_t*)th->payload();
-            M5_LOGI("[RC]:%u:Clr:%x", th->rudp.sequence, *pd);
-            this->_color = *pd;
-            this->_received = true;
+            if(th->hasPayload())
+            {
+                M5_LOGD("Clr");
+                auto pd = (uint16_t*)th->payload();
+                M5_LOGI("[RC]:%u:Clr:%x", th->rudp.sequence, *pd);
+                this->_color = *pd;
+                this->_received = true;
+            }
         }, data);
     }
   private:
@@ -111,6 +117,8 @@ goblib::UnifiedButton unifiedButton;
 
 void setup()
 {
+    esp_log_level_set("*", ESP_LOG_DEBUG);
+
     M5_LOGI("Heap:%u", esp_get_free_heap_size());
     M5.begin();
     unifiedButton.begin(&lcd);
@@ -135,11 +143,11 @@ void setup()
     }
 
     comm.registerPeer(dest);
-    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
+    //    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
     comm.registerTransceiver(&colorT);
     comm.registerTransceiver(&btnT);
     comm.registerTransceiver(&hbT);
-    //comm.setLossOfConnectionTime(1000 * 10);
+
     comm.begin(APP_ID); // Set unique application identifier
     hbT.begin(Communicator::instance().address() < dest);
     
@@ -175,13 +183,16 @@ void loop()
     ButtonData d;
     d.btnA = M5.BtnA.isPressed();
     d.btnB = M5.BtnB.isPressed();
-    d.btnC = M5.BtnC.isPressed();
+    //d.btnC = M5.BtnC.isPressed();
     if(last.btn != d.btn)
     {
         M5_LOGI("Post btn:%x", d.btn);
         // Data accumulation(Send not yet).
 #if 1
+        //        if(!btnT.postUnreliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
+        //        if(!btnT.postUnreliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
         if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
+        //        if(!btnT.postUnreliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
 #else
         if(!btnT.sendReliable(dest, d)) { M5_LOGE("Failed to send"); } // Send directly
 #endif
@@ -189,7 +200,7 @@ void loop()
     }
 
 #if !defined(NDEBUG)
-    if(M5.BtnC.wasHold())
+    if(M5.BtnC.wasClicked())
     {
         M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
     }

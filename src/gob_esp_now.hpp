@@ -36,13 +36,30 @@
  */
 namespace goblib {
 
-/*!
+/*
   @namespace esp_now
   @brief For ESP-NOW
  */
 namespace esp_now {
 
 constexpr char LIB_TAG[] = "gen"; //!< @brief Tag for logging
+
+template<typename E> constexpr inline typename std::underlying_type<E>::type to_underlying(const E& e) noexcept
+{
+    return static_cast<typename std::underlying_type<E>::type>(e);
+}
+
+// Restore values based on u64 (assuming u8 is earlier)
+inline uint64_t restore_u64_earlier(const uint64_t u64, const uint8_t u8)
+{
+    return ((u64 - ((uint8_t)(u64 & 0xFF) < u8) * 0x100) & ~static_cast<uint64_t>(0xff)) | u8;
+}
+
+// Restore values based on u64 (assuming u8 is later)
+inline uint64_t restore_u64_later(const uint64_t u64, const uint8_t u8)
+{
+    return (u64 & ~static_cast<uint64_t>(0xff)) | u8;
+}
 
 /*!
   @struct lock_guard
@@ -150,8 +167,16 @@ struct TransceiverHeader
     RUDP    rudp{}; //!< @brief RUDP header
     // Payload continues if exists
 
-    inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
+    ///@name Properties
+    ///@{
+    inline bool isReliable() const { return rudp.flag; } //!< @brief is reliable data?
+    inline bool isUnreliable() const { return !rudp.flag; } //!< @brief is unreliable data?
+    inline bool isSYN() const { return (rudp.flag & to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN?
+    inline bool isRST() const { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
+    inline bool isACK() const { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
     inline bool hasPayload() const { return size > sizeof(*this); } //!< @brief Has payload?
+    ///@}
+    inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
 }  __attribute__((__packed__));
 
 
@@ -190,9 +215,9 @@ class Communicator
 
     const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
     //! Gets the threshold for loss of connection (ms)
-    unsigned long lossOfConnectionTime() const { return _locTime; } 
+    //    unsigned long lossOfConnectionTime() const { return _locTime; } 
     //! Set threshold for loss of connection (ms)
-    void setLossOfConnectionTime(const unsigned long ms) { _locTime = ms; }
+    //    void setLossOfConnectionTime(const unsigned long ms) { _locTime = ms; }
     
     /*!
       @brief Begin communication
@@ -209,6 +234,7 @@ class Communicator
 
     ///@name Transceiver
     ///@{
+    Transceiver* transceiver(const uint8_t tid); //!< @brief Gets the transceiver
     bool registerTransceiver(Transceiver* t); //!< @brief Register
     bool unregisterTransceiver(Transceiver* t); //!< @brief Unregister
     size_t numOfTransceivers() const { return _transceivers.size(); } //!< @brief Gets the number of registered transceivers
@@ -298,8 +324,9 @@ class Communicator
   protected:
     Communicator();
 
-    static constexpr unsigned long LOSS_OF_CONNECTION_TIME =  4000; //!< @brief Threshold for loss of connection (ms)
-
+    //static constexpr unsigned long LOSS_OF_CONNECTION_TIME =  4000; //!< @brief Threshold for loss of connection (ms)
+    static constexpr unsigned long DEFAULT_RESEND_INTERVAL = 1000 * 1; //!< @brief Resend interval (ms)
+    
     ///@name Callback
     ///@note Called from WiFi-task.
     /// @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html
@@ -310,23 +337,22 @@ class Communicator
     void onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length);
     ///@}
 
-    bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& vec);
-    void move_to_last(const uint8_t* peer_addr, std::vector<uint8_t>& vec);    
-
+    bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
+    void append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>& packet);    
+    bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
+    
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
 
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     volatile bool _canSend{true};
-    volatile bool _retry{};
-    unsigned long _sentTime{}, _locTime{LOSS_OF_CONNECTION_TIME};
+    unsigned long _sentTime{};
+    unsigned long _resendTimer{}, _resendInterval{DEFAULT_RESEND_INTERVAL};
+        //_locTime{LOSS_OF_CONNECTION_TIME};
 
     MACAddress _addr{}; // Self address
     std::vector<Transceiver*> _transceivers;
-
-    MACAddress _lastAddr{};
-    std::vector<uint8_t> _lastData{};
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
     using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
@@ -334,6 +360,7 @@ class Communicator
     using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
 #endif
     queue_map_t _queue;
+    queue_map_t _sentQueue;
 
 #if !defined(NDEBUG)
     bool _debugEnable{};
@@ -365,21 +392,23 @@ class Transceiver
     ///@{
     int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
     inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
-    inline uint64_t sequence(const MACAddress& addr) const { return (_recvSeq.count(addr) == 1) ? _recvSeq.at(addr) : 0ULL; } //!< @brief Gets the received sequence No,
-    inline uint64_t ack(const MACAddress& addr) const { return (_recvAck.count(addr) == 1) ? _recvAck.at(addr) : 0ULL; } //!< @brief Gets the received ACK No,
+    inline uint64_t sequence(const MACAddress& addr) const { return (_peerSeq.count(addr) == 1) ? _peerSeq.at(addr) : 0ULL; } //!< @brief Gets the received sequence No,
+    inline uint64_t ack(const MACAddress& addr) const { return (_peerAck.count(addr) == 1) ? _peerAck.at(addr) : 0ULL; } //!< @brief Gets the received ACK No,
     //! @brief Was the specified sequence received by all peers?
-    bool received(const uint64_t seq)
+    inline bool peerReceived(const uint64_t seq)
     {
-        return std::all_of(_recvAck.begin(), _recvAck.end(), [&seq](decltype(_recvAck)::const_reference a)
+        return std::all_of(_peerAck.begin(), _peerAck.end(), [&seq](decltype(_peerAck)::const_reference a)
         {
             return seq <= a.second || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
         });
     }
+    //! @brief Was the specified sequence received by all peers?
+    inline bool peerReceived(const uint8_t seq) { return peerReceived(restore_u64_earlier(_sequence, seq)); }
+
     //! @brief Was the specified sequence received at the specified peer?
-    bool received(const uint64_t seq, const MACAddress& addr)
-    {
-        return seq <= _recvAck[addr];
-    }
+    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerAck[addr]; }
+    //! @brief Was the specified sequence received at the specified peer?
+    inline bool peerReceived(const uint8_t seq, const MACAddress& addr) { return peerReceived(restore_u64_earlier(_sequence, seq), addr); }
     ///@}
 
     //! @brief Reset sequence,ack...
@@ -465,7 +494,7 @@ class Transceiver
       YourTransceiver yt(1);
       void foo()
       {
-          int arg;
+          int arg{3};
           auto ret = yt.with_lock([](const int v)
           {
               return v * yt.value();
@@ -489,7 +518,6 @@ class Transceiver
 #endif    
 
   protected:
-    void build_peer_map();
     /*!
       @brief update transceiver
       @note Call in Communicator::update
@@ -506,26 +534,32 @@ class Transceiver
     //! @brief Notification callbacks
     virtual void onNotify(const Notify /*notify*/, const void* /*arg*/) { /* nop */ }
 
+    void build_peer_map();
+    bool post_ack(const uint8_t* peer_addr);
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
-    void on_receive(const MACAddress& addr, const TransceiverHeader* data);
-    void on_notify(const Notify notify, const void* arg);
-    
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
     using seq_map_t = std::map<MACAddress, uint64_t>;
 #else
     using seq_map_t = vmap<MACAddress, uint64_t>;
 #endif
-    const seq_map_t& sequences() const { return _recvSeq; }
-    const seq_map_t& acks() const { return _recvAck; }
+    const seq_map_t& sequences() const { return _peerSeq; }
+    const seq_map_t& acks() const { return _peerAck; }
     
   private:
-    mutable SemaphoreHandle_t _sem{}; // Binary semaphore
-    const uint8_t _tid{}; // Transceiver unique identifier
-    uint64_t _sequence{}; // send sequence
-    seq_map_t _recvSeq; // received sequence no
-    seq_map_t _recvAck; // received ack no
+    void _update(const unsigned long ms);
+    void on_receive(const MACAddress& addr, const TransceiverHeader* data);
+    void on_notify(const Notify notify, const void* arg);
     
+  private:
+    const uint8_t _tid{}; // Transceiver unique identifier
+    unsigned long _sentTime{};
+    uint64_t _sequence{}; // Send sequence
+
+    seq_map_t _peerSeq; // Sent by peer sequenceNo (It will be set to rudp.ack when send)
+    seq_map_t _peerAck; // Sequence received by the peer
+    
+    mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     friend class Communicator;
 };
 //

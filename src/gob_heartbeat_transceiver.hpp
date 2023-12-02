@@ -39,13 +39,12 @@ class HeartbeatTransceiver :public Transceiver
     virtual void onNotify(const Notify notify, const void* arg) override;
 
     void post_heart_beat(const unsigned long ms);
-    void post_ack(const MACAddress& addr);
 
     static constexpr unsigned long DEFAULT_INTERVAL = 1000 * 10;
     static constexpr uint8_t DEFAULT_CONSIDER_CONNECTION_LOST = 4;
 
   private:    
-    struct Sent { unsigned long time; uint64_t sequence; };
+    struct Sent { unsigned long time; uint64_t sequence; } __attribute__((__packed__));
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
     using recv_map_t = std::map<MACAddress, unsigned long>;

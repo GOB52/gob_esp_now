@@ -50,14 +50,14 @@ void HeartbeatTransceiver::update(const unsigned long ms)
         uint64_t acked{};
         for(auto it = _sent.crbegin(); it != _sent.crend(); ++it)
         {
-            if(this->received(it->sequence)) { acked = it->sequence; break; }
+            if(this->peerReceived(it->sequence)) { acked = it->sequence; break; }
         }
         if(!acked) return;
 
         auto it = std::remove_if(_sent.begin(), _sent.end(), [&acked](const Sent& s) { return s.sequence <= acked; });
         _sent.erase(it, _sent.end());
         this->_acked = acked;
-        LIB_LOGD("[HBT]:acked %llu", acked);
+        LIB_LOGV("[HBT]:acked %llu", acked);
     });
     
     if(_sender) { update_sender  (ms); }
@@ -68,10 +68,13 @@ void HeartbeatTransceiver::update_sender(const unsigned long ms)
 {
     if(Communicator::instance().numOfPeer() > 0 && ms > _lastSent + _interval)
     {
+        // TODO: 通信するものがない場合のみ
         post_heart_beat(ms);
     }
     // If no response is received _ccl times, the connection is considered lost.
-    MACAddress addr = with_lock([this]()
+    std::vector<MACAddress> lost;
+
+    with_lock([this, &lost]()
     {
         if(!_sent.empty())
         {
@@ -87,13 +90,13 @@ void HeartbeatTransceiver::update_sender(const unsigned long ms)
                 if(_sent.back().sequence - it.second  > this->_ccl)
                 {
                     LIB_LOGD("last seq:%llu acked:%llu", _sent.back().sequence, it.second);
-                    return it.first;
+                    lost.push_back(it.first);
                 }
             }
         }
         return MACAddress();
     });
-    if((bool)addr) { Communicator::instance().notify(Notify::ConnectionLost, &addr); }
+    for(auto& a : lost) { Communicator::instance().notify(Notify::ConnectionLost, &a); }
 }
 
 void HeartbeatTransceiver::update_receiver(const unsigned long ms)
@@ -129,8 +132,8 @@ void HeartbeatTransceiver::post_heart_beat(const unsigned long ms)
     if(Communicator::instance().numOfPeer() == 0) { return; }
 
     uint8_t buf[sizeof(TransceiverHeader)];
-    auto pa = (bool)_addr ? _addr.data() : nullptr; // specific target or all peer.
-    auto seq = make_data(buf, RUDP::Flag::NUL, pa);
+    auto paddr = (bool)_addr ? _addr.data() : nullptr; // specific target or all peer.
+    auto seq = make_data(buf, RUDP::Flag::NUL, paddr);
     Communicator::instance().post((bool)_addr ? _addr.data() : nullptr, buf, sizeof(buf));
 
     LIB_LOGD("[HBT]:S %u %lu", ((TransceiverHeader*)buf)->rudp.sequence, ms);
@@ -138,27 +141,19 @@ void HeartbeatTransceiver::post_heart_beat(const unsigned long ms)
     _lastSent = ms;
 }
 
-void HeartbeatTransceiver::post_ack(const MACAddress& addr)
-{
-    LIB_LOGD("[HBT]:A %s", addr.toString().c_str());
-    uint8_t buf[sizeof(TransceiverHeader)];
-    make_data(buf, RUDP::Flag::ACK, addr.data());
-    Communicator::instance().post(addr.data(), buf, sizeof(buf));
-}
-
 void HeartbeatTransceiver::onReceive(const MACAddress& addr, const TransceiverHeader* data)
 {
     with_lock([this, &addr, &data]()
     {
         auto ms = millis();
-        LIB_LOGD("[HBT]:R [%s] S:%U A:%u %lu", addr.toString().c_str(), data->rudp.sequence, data->rudp.ack, ms);
+        LIB_LOGD("[HBT]:R [%s] %u:%u %lu", addr.toString().c_str(), data->rudp.sequence, data->rudp.ack, ms);
         this->_recv[addr] = ms;
     });
 
     // Return ACK to addr if received NUL
-    if(data->rudp.flag == (RUDP::flag_t)RUDP::Flag::NUL)
+    if(data->rudp.flag == to_underlying(RUDP::Flag::NUL))
     {
-        post_ack(addr);
+        post_ack(addr.data());
     }
 }
 
@@ -169,14 +164,10 @@ void HeartbeatTransceiver::onNotify(const Notify notify, const void* arg)
     if(!arg) { LIB_LOGE("illegal arg"); return; }
 
     auto paddr = (MACAddress*)arg;
-    LIB_LOGI("CONNECTION LOST: %s", paddr->toString().c_str());
-    Communicator::instance().unregisterPeer(*paddr);
     with_lock([this,&paddr]()
     {
-        this->_sent.clear();
         this->_recv.erase(*paddr);
     });
 }
-
 //
 }}
