@@ -349,7 +349,7 @@ void Communicator::update()
 
     lock_guard _(_sem);
 
-    for(auto& t : _transceivers) { t->_update(ms); t->update(ms); } // update transceivers
+    for(auto& t : _transceivers) { t->_update(ms); t->update(ms); } // Update transceivers
 
     // Remove responded data from the sent queue
     for(auto& it : _sentQueue) { remove_acked(it.first, it.second); }
@@ -366,22 +366,19 @@ void Communicator::update()
             send_esp_now((bool)it.first ? it.first.data() : nullptr, it.second);
             _resendTimer = ms;
             sent = true;
+            // Transmission is not possible before receiving the transmission callback, so it is terminated
             break;
         }
     }
-
-
     if(!sent)
     {
-        // Resend data that has not been received and confirmed within a certain period of time
-        bool resent{};
+        // Resend RUDP data that has not been confirmed within a certain period of time
         for(auto& it : _sentQueue)
         {
-            if(remove_acked(it.first, it.second) && !resent && _resendTimer && ms >= _resendTimer + _resendInterval)
+            if(remove_acked(it.first, it.second) && _resendTimer && ms >= _resendTimer + _resendInterval)
             {
                 LIB_LOGD("---- Rsend");
                 _resendTimer = ms;
-                resent = true;
                 send_esp_now((bool)it.first ? it.first.data() : nullptr, it.second);
                 break;
             }
@@ -749,9 +746,9 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
 
                 auto b = !th->isACK() || t->with_lock([&t,&th,&addr]()
                 {
-                    auto rseq = restore_u64_later(t->_peerSeq[addr], th->rudp.sequence);
-                    //LIB_LOGD("th:%u rseq:%llu recvSeq:%llu", th->rudp.sequence, rseq, t->_peerSeq[addr]);
-                    return rseq == (t->_peerSeq[addr] + 1) || t->_peerSeq[addr] == 0;
+                    auto rseq = restore_u64_later(t->_peerRecv[addr].sequence, th->rudp.sequence);
+                    //LIB_LOGD("th:%u rseq:%llu recvSeq:%llu", th->rudp.sequence, rseq, t->_peerRecv[addr].sequence);
+                    return rseq == (t->_peerRecv[addr].sequence + 1) || t->_peerRecv[addr].sequence == 0;
                     
                 });
                 if(b)
@@ -759,7 +756,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                     t->on_receive(addr, th);
                     t->onReceive(addr, th);
                 }
-                else { LIB_LOGW("Old or future data has come.%u / %llu",th->rudp.sequence, t->_peerSeq[addr]); }
+                else { LIB_LOGW("Old or future data has come.%u / %llu",th->rudp.sequence, t->_peerRecv[addr].sequence); }
                 break;
             }
         }
@@ -838,14 +835,12 @@ Transceiver::~Transceiver()
 void Transceiver::reset()
 {
     _sequence = 0;
-    for(auto& it : _peerSeq) { it.second = 0; }
-    for(auto& it : _peerAck) { it.second = 0; }
+    for(auto& it : _peerRecv) { it.second = {}; }
 }
 
 void Transceiver::clear(const MACAddress& addr)
 {
-    _peerSeq.erase(addr);
-    _peerAck.erase(addr);
+    _peerRecv.erase(addr);
 }
 
 bool Transceiver::postReliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
@@ -891,8 +886,7 @@ void Transceiver::build_peer_map()
         {
             // Make it if not exists
             MACAddress addr(info.peer_addr);
-            if(!_peerSeq.count(addr))  { _peerSeq[addr] = 0; }
-            if(!_peerAck.count(addr))  { _peerAck[addr] = 0; }
+            if(!_peerRecv.count(addr))  { _peerRecv[addr] = {}; }
         }
         while(esp_now_fetch_peer(false, &info) == ESP_OK);
     }
@@ -922,18 +916,19 @@ uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
         th->rudp.sequence = (++_sequence) & 0xFF;
         seq = _sequence;
 
-        uint64_t ack = _peerSeq[MACAddress(peer_addr)];
+        uint64_t ack = _peerRecv[MACAddress(peer_addr)].sequence;
         if(!peer_addr)
         {
+            // TODO: min_elemnt ではなく on_receive 時に常に[00:...].sequence に情報ストック(比較した上で)した方がいい?
             // Smallest of peers except NULL MACAddress
-            auto it = std::min_element(_peerSeq.begin(), _peerSeq.end(),
-                                       [](decltype(_peerSeq)::const_reference a, decltype(_peerSeq)::const_reference b)
+            auto it = std::min_element(_peerRecv.begin(), _peerRecv.end(),
+                                       [](decltype(_peerRecv)::const_reference a, decltype(_peerRecv)::const_reference b)
                                        {
                                            if(!a.first) return false;
                                            if(!b.first) return true;
-                                           return a.second < b.second;
+                                           return a.second.sequence < b.second.sequence;
                                        });
-            ack = (it != _peerSeq.end()) ? it->second : 0x00;
+            ack = (it != _peerRecv.end()) ? it->second.sequence : 0;
         }
         th->rudp.ack = ack & 0xFF;
         
@@ -971,9 +966,11 @@ void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* da
         lock_guard _(_sem);
         if(data->isACK())
         {
-            _peerSeq[addr] = restore_u64_later(_peerSeq[addr], data->rudp.sequence);
-            _peerAck[addr] = restore_u64_later(_peerAck[addr], data->rudp.ack);
-            LIB_LOGD("[RECV]:(%u):%llu/%llu", data->tid, _peerSeq[addr], _peerAck[addr]);
+            //_peerRecv[addr].sequence =
+            auto seq = restore_u64_later(_peerRecv[addr].sequence, data->rudp.sequence);
+            auto ack = restore_u64_later(_peerRecv[addr].ack, data->rudp.ack);
+            _peerRecv[addr] = Recv{ seq, ack, millis() };
+            LIB_LOGD("[RECV]:(%u):%llu/%llu", data->tid, _peerRecv[addr].sequence, _peerRecv[addr].ack);
         }
     }
     if(data->isRST())
@@ -1001,13 +998,10 @@ String Transceiver::debugInfo() const
     lock_guard _(_sem);
     String s;
     s = formatString("TID:%u SEQ:%llu\n", _tid, _sequence);
-    for(auto& it :  _peerSeq)
+    for(auto& r : _peerRecv)
     {
-        s += formatString("  Seq:[%s]:%llu\n", it.first.toString().c_str(), it.second);
-    }
-    for(auto& it :  _peerAck)
-    {
-        s += formatString("  ACK:[%s]:%llu\n", it.first.toString().c_str(), it.second);
+        s += formatString("  [%s] %llu/%llu %lu\n", r.first.toString().c_str(),
+                          r.second.sequence, r.second.ack, r.second.time);
     }
     s.trim();
     return s;

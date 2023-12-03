@@ -214,9 +214,9 @@ class Communicator
     /// @endcond
 
     const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
-    //! Gets the threshold for loss of connection (ms)
+    // Gets the threshold for loss of connection (ms)
     //    unsigned long lossOfConnectionTime() const { return _locTime; } 
-    //! Set threshold for loss of connection (ms)
+    // Set threshold for loss of connection (ms)
     //    void setLossOfConnectionTime(const unsigned long ms) { _locTime = ms; }
     
     /*!
@@ -325,7 +325,7 @@ class Communicator
     Communicator();
 
     //static constexpr unsigned long LOSS_OF_CONNECTION_TIME =  4000; //!< @brief Threshold for loss of connection (ms)
-    static constexpr unsigned long DEFAULT_RESEND_INTERVAL = 1000 * 1; //!< @brief Resend interval (ms)
+    static constexpr unsigned long DEFAULT_RESEND_INTERVAL = 1000 * 3; //!< @brief Resend interval (ms)
     
     ///@name Callback
     ///@note Called from WiFi-task.
@@ -392,21 +392,22 @@ class Transceiver
     ///@{
     int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
     inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
-    inline uint64_t sequence(const MACAddress& addr) const { return (_peerSeq.count(addr) == 1) ? _peerSeq.at(addr) : 0ULL; } //!< @brief Gets the received sequence No,
-    inline uint64_t ack(const MACAddress& addr) const { return (_peerAck.count(addr) == 1) ? _peerAck.at(addr) : 0ULL; } //!< @brief Gets the received ACK No,
+    inline uint64_t sequence(const MACAddress& addr) const { return (_peerRecv.count(addr) == 1) ? _peerRecv.at(addr).sequence : 0ULL; } //!< @brief Gets the received sequence No,
+    inline uint64_t ack(const MACAddress& addr) const { return (_peerRecv.count(addr) == 1) ? _peerRecv.at(addr).ack : 0ULL; } //!< @brief Gets the received ACK No,
+    inline unsigned long ackTime(const MACAddress& addr) const { return (_peerRecv.count(addr) == 1) ? _peerRecv.at(addr).time : 0; } //!< @brief Gets the latest time of received ACK
     //! @brief Was the specified sequence received by all peers?
     inline bool peerReceived(const uint64_t seq)
     {
-        return std::all_of(_peerAck.begin(), _peerAck.end(), [&seq](decltype(_peerAck)::const_reference a)
+        return std::all_of(_peerRecv.begin(), _peerRecv.end(), [&seq](decltype(_peerRecv)::const_reference a)
         {
-            return seq <= a.second || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
+            return seq <= a.second.ack || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
         });
     }
     //! @brief Was the specified sequence received by all peers?
     inline bool peerReceived(const uint8_t seq) { return peerReceived(restore_u64_earlier(_sequence, seq)); }
 
     //! @brief Was the specified sequence received at the specified peer?
-    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerAck[addr]; }
+    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerRecv[addr].ack; }
     //! @brief Was the specified sequence received at the specified peer?
     inline bool peerReceived(const uint8_t seq, const MACAddress& addr) { return peerReceived(restore_u64_earlier(_sequence, seq), addr); }
     ///@}
@@ -538,13 +539,23 @@ class Transceiver
     bool post_ack(const uint8_t* peer_addr);
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
+    /*!
+      @struct Recv
+      @brief received information
+     */
+    struct Recv
+    {
+        uint64_t sequence;  // Sent by peer sequenceNo (It will be set to rudp.ack when send)
+        uint64_t ack;       // Sequence received by the peer
+        unsigned long time; // Time ACK received
+    };
+
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using seq_map_t = std::map<MACAddress, uint64_t>;
+    using recv_map_t = std::map<MACAddress, Recv>;
 #else
-    using seq_map_t = vmap<MACAddress, uint64_t>;
+    using recv_map_t = vmap<MACAddress, Recv>;
 #endif
-    const seq_map_t& sequences() const { return _peerSeq; }
-    const seq_map_t& acks() const { return _peerAck; }
+    const recv_map_t& peerRecv() const { return _peerRecv; }
     
   private:
     void _update(const unsigned long ms);
@@ -555,9 +566,7 @@ class Transceiver
     const uint8_t _tid{}; // Transceiver unique identifier
     unsigned long _sentTime{};
     uint64_t _sequence{}; // Send sequence
-
-    seq_map_t _peerSeq; // Sent by peer sequenceNo (It will be set to rudp.ack when send)
-    seq_map_t _peerAck; // Sequence received by the peer
+    recv_map_t _peerRecv;
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     friend class Communicator;

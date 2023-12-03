@@ -6,6 +6,7 @@
 #define GOBLIB_HEARTBEAT_TRANSCEIVER_HPP
 
 #include "gob_esp_now.hpp"
+#include <set>
 
 namespace goblib { namespace esp_now {
 
@@ -37,7 +38,6 @@ class HeartbeatTransceiver :public Transceiver
 
     virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override;
     virtual void onNotify(const Notify notify, const void* arg) override;
-
     void post_heart_beat(const unsigned long ms);
 
     static constexpr unsigned long DEFAULT_INTERVAL = 1000 * 10;
@@ -45,19 +45,14 @@ class HeartbeatTransceiver :public Transceiver
 
   private:    
     struct Sent { unsigned long time; uint64_t sequence; } __attribute__((__packed__));
-
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using recv_map_t = std::map<MACAddress, unsigned long>;
-#else
-    using recv_map_t = vmap<MACAddress, unsigned long>;
-#endif
-    recv_map_t _recv{};
     std::vector<Sent> _sent;
+
     bool _began{}, _sender{};
     uint64_t _acked{};
     unsigned long _interval{DEFAULT_INTERVAL}, _lastSent{};
     uint8_t _ccl{DEFAULT_CONSIDER_CONNECTION_LOST};
-    MACAddress _addr{};
+    MACAddress _addr{}; // Specific target for sender
+    std::set<MACAddress> _senderAddress{}; // Sender address for receiver
 };
 //
 }}
