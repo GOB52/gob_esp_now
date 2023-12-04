@@ -71,8 +71,10 @@ inline float randf() { return esp_random() / (float)UINT32_MAX; } // [0.0, 1.0]
 
 String packet_to_str(const void* packet)
 {
-    auto ch = (const CommunicatorHeader*)packet;
     String s;
+    if(!packet) { return s; }
+
+    auto ch = (const CommunicatorHeader*)packet;
     s += formatString("CH %u:%u:%u ",ch->app_id, ch->count, ch->size);
 
     auto cnt = ch->count;
@@ -89,9 +91,7 @@ String packet_to_str(const void* packet)
 
 String packet_to_str(const std::vector<uint8_t>& packet)
 {
-    if(packet.empty()) { return String(); }
-    assert(packet.size() >= sizeof(CommunicatorHeader) && "illgal size");
-    return packet_to_str(packet.data());
+    return packet_to_str(packet.empty() ? nullptr : packet.data());
 }
 
 uint8_t append_packet(std::vector<uint8_t>& dv /*packet*/, std::vector<uint8_t>& sv /*packet*/)
@@ -127,17 +127,19 @@ uint8_t append_packet(std::vector<uint8_t>& dv /*packet*/, std::vector<uint8_t>&
     return dch->count;
 }
 
-template<typename Func> void for_each_packet(const std::vector<uint8_t>& packet, Func func)
+// Iteration of tranceiver data in packet.
+template<typename Func, typename... Args>
+void for_each_packet(const std::vector<uint8_t>& packet, Func func, Args&&... args)
 {
+    if(packet.empty()) { return; }
     auto p = packet.data();
     auto ch = (const CommunicatorHeader*)p;
-    if(packet.empty() || ch->count == 0) { return; }
-    p += sizeof(Communicator);
     auto cnt = ch->count;
+    p += sizeof(Communicator);
     while(cnt--)
     {
         auto th = (const TransceiverHeader*)p;
-        func(th);
+        func(th, std::forward<Args>(args)...);
         p += th->size;
     }
 }
@@ -161,12 +163,13 @@ void initialize_esp_now()
     }
 }
 
-bool remove_unreliable(std::vector<uint8_t>& packet)
+// Remove that do not need to be resended
+bool remove_not_need_resend(std::vector<uint8_t>& packet)
 {
+    if(packet.empty()) { return false; }
+
     auto p = packet.data();
     auto ch = (CommunicatorHeader*)p;
-    if(packet.empty() || ch->count == 0) { return false; }
-    
     auto cnt = ch->count;
     p += sizeof(CommunicatorHeader);
 
@@ -174,8 +177,8 @@ bool remove_unreliable(std::vector<uint8_t>& packet)
     while(cnt--)
     {
         auto th = (TransceiverHeader*)p;
-        // Unreliable?
-        if(th->rudp.flag == 0)
+        // Unreliable, ACK only?
+        if(th->rudp.flag == 0 || (th->rudp.flag == to_underlying(RUDP::Flag::ACK) && !th->hasPayload()))
         {
             ch->count--;
             ch->size -= th->size;
@@ -260,86 +263,14 @@ void Communicator::end()
 
         esp_now_unregister_send_cb();
         esp_now_unregister_recv_cb();
+        _params = RUDP::SYN_Params{};
     }
 }
 
-#if 0
-//update (eempry interval)
-// 各ピアに ACK send
+// TODO
+// SYN パラメータの Comm反映
+// SYN-SYN+ACK-ACK は その前に SYNする?BROADCAST
 
-// post
-[0][...]
-Queue:
-[0][...]
-
-// post
-[B][...]
-Queue:
-[0][...]
-[B][...]
-
-// post
-[A][...]
-Queue:
-[0][...]
-[A][...]
-[B][...]
-
-// update
-Send
-Queie:
-[A][...]
-[B][...]
-Sent:
-[0][..] // unrelizable 消去
-
-// update
-Send
-Queie:
-[B][...]
-Sent:
-[0][..] 
-[A][.] // unrelizable 消去
-
-//post 
-[0][...]
-Queie:
-Queie:
-[B][...]
-Sent:
-[0][..]
-[B][...]
-
-// update
-Send
-Queie:
-[B][...]
-Sent:
-[0][.....]  // 同アドレスは足す
-[A][.]
-
-// update
-Sentd:
-[0]acked  // Sent から send ack ずみ削除して acked してないものがあれば送信
-Queie:
-[B][...]
-Sent:
-
-// update
-Queie:
-Sent:
-[0][..] 
-[A][.]
-[B][.] // unrelizable 消去
-
-// update
-Queie:
-Sent:
-[0][.] 
-[A][.]
-[B][.]
-
-#endif
 
 void Communicator::update()
 {
@@ -352,38 +283,47 @@ void Communicator::update()
     for(auto& t : _transceivers) { t->_update(ms); t->update(ms); } // Update transceivers
 
     // Remove responded data from the sent queue
-    for(auto& it : _sentQueue) { remove_acked(it.first, it.second); }
+    for(auto& q : _sentQueue) { remove_acked(q.first, q.second); }
     
     if(!_canSend) { return; }
 
     // Send if exists queue (Order by MACAddresss ASC, Null MACAddress is top)
     bool sent{};
-    for(auto& it : _queue)
+    for(auto& q : _queue)
     {
-        if(!it.second.empty())
+        if(q.second.empty()) { continue; }
+        LIB_LOGD("---- Send:[%s]", q.first.toString().c_str());
+        if(send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second))
         {
-            LIB_LOGD("---- Send");
-            send_esp_now((bool)it.first ? it.first.data() : nullptr, it.second);
-            _resendTimer = ms;
+            _resendTimer = ms + _params.retransmissionTimeout;
             sent = true;
             // Transmission is not possible before receiving the transmission callback, so it is terminated
             break;
         }
     }
-    if(!sent)
+    if(sent) { return; }
+
+    // Resend RUDP data that has not been confirmed within a certain period of time
+    for(auto& q : _sentQueue)
     {
-        // Resend RUDP data that has not been confirmed within a certain period of time
-        for(auto& it : _sentQueue)
+        if(!remove_acked(q.first, q.second)) { continue; }
+        if(_resendTimer && ms >= _resendTimer)
         {
-            if(remove_acked(it.first, it.second) && _resendTimer && ms >= _resendTimer + _resendInterval)
+            LIB_LOGD("---- Rsend:[%s]", q.first.toString().c_str());
+            if(send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second))
             {
-                LIB_LOGD("---- Rsend");
-                _resendTimer = ms;
-                send_esp_now((bool)it.first ? it.first.data() : nullptr, it.second);
+                _resendTimer = ms + _params.retransmissionTimeout;
+                sent = true;
                 break;
             }
         }
     }
+#if 0
+    // Post a NUL if no transmission continues for a period of time.
+    if(!sent && ms > _sentTimer + _params.nullSegmentTimeout)
+    {
+    }
+#endif
 }
 
 // Post
@@ -406,9 +346,13 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
 
     // Overflow
     // TODO:..... 蓄積と再ポストはどうする?
-    //ここまで溜まること自体が問題なので Disconnect でもいい気がする
     if(length + md.size() > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Overflow"); return false; }
 
+    // 
+    auto t = transceiver( ((TransceiverHeader*)data)->tid );
+    assert(t && "No transceiver");
+    t->with_lock([&t,&addr]() { t->_peerRecv[addr].time = millis(); });
+    
     // Append data
     auto p = md.data();
     auto ch = (CommunicatorHeader*)p;
@@ -446,7 +390,14 @@ bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_
     v.insert(v.end(), (uint8_t*)&ch, (uint8_t*)&ch + sizeof(ch));
     v.insert(v.end(), (uint8_t*)data, (uint8_t*)data + length);
 #endif    
-    return send_esp_now(peer_addr, v);
+    if(send_esp_now(peer_addr, v))
+    {
+        auto t = transceiver( ((TransceiverHeader*)data)->tid );
+        assert(t && "No transceiver");
+        t->with_lock([&t, &peer_addr]() { t->_peerRecv[MACAddress(peer_addr)].time = millis(); });
+        return true;
+    }
+    return false;
 }
 
 bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& packet)
@@ -463,7 +414,7 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     if(isEnableDebug() && randf() < _debugSendLoss)
     {
         if(!_sentTime) { _sentTime = millis(); }
-        remove_unreliable(packet);
+        remove_not_need_resend(packet);
         append_to_sent(peer_addr, packet);
         if(packet.data() != _sentQueue[addr].data()) { packet.clear(); }
         LIB_LOGD("[DF]:FailedS");
@@ -474,7 +425,7 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     if(ret != ESP_OK)
     {
         LIB_LOGE("Failed to esp_now_send %s %d:%s", MACAddress(peer_addr).toString().c_str(), ret, err2cstr(ret));
-        remove_unreliable(packet);
+        remove_not_need_resend(packet);
         append_to_sent(peer_addr, packet);
         if(packet.data() != _sentQueue[addr].data()) { packet.clear(); }
         return false;
@@ -482,7 +433,7 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
 
     if(!_sentTime) { _sentTime = millis(); }
     _canSend = false;
-    remove_unreliable(packet);
+    remove_not_need_resend(packet);
     append_to_sent(peer_addr, packet);
     if(packet.data() != _sentQueue[addr].data()) { packet.clear(); }
     return true;
@@ -507,15 +458,14 @@ void Communicator::append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>
 // return true if data available
 bool Communicator::remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet)
 {
-    auto p = packet.data();
-    auto ch = (CommunicatorHeader*)p;
-    if(packet.empty() || ch->count == 0) { return false; }
+    if(packet.empty()) { return false; }
     assert(packet.size() >= sizeof(CommunicatorHeader) && "illgal size");
 
     //LIB_LOGD("packet:[%s]", packet_to_str(packet).c_str());
-    
-    p += sizeof(CommunicatorHeader);
+    auto p = packet.data();
+    auto ch = (CommunicatorHeader*)p;
     auto cnt = ch->count;
+    p += sizeof(CommunicatorHeader);
 
     while(cnt--)
     {
@@ -770,7 +720,16 @@ String Communicator::debugInfo() const
     lock_guard _(_sem);
     String s;
     s += formatString("Communicator app_id:%u, %zu transceivers\n", _app_id, _transceivers.size());
-
+    s += formatString("SYN<%u/%u/%u/%u %u:%u;%u:%u\n",
+                      _params.retransmissionTimeout,
+                      _params.cumulativeAckTimeout,
+                      _params.nullSegmentTimeout,
+                      _params.transferStateTimeout,
+                      _params.maxRetrans,
+                      _params.maxCumAck,
+                      _params.maxOutOfSeq,
+                      _params.maxAutoReset);
+                      
     for(auto& t : _transceivers)
     {
         s += t->debugInfo() + '\n';
@@ -892,6 +851,7 @@ void Transceiver::build_peer_map()
     }
 }
 
+// WARN:Locked in this
 bool Transceiver::post_ack(const uint8_t* peer_addr)
 {
     LIB_LOGD("A:[%s]", MACAddress(peer_addr).toString().c_str());
@@ -903,24 +863,23 @@ bool Transceiver::post_ack(const uint8_t* peer_addr)
 // WARN:Locked in this
 uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    uint64_t seq{};
     // Header
     TransceiverHeader* th = (TransceiverHeader*)obuf;
     th->tid = _tid;
     th->size = sizeof(*th) + length;
+
     auto fvalue = to_underlying(flag);
+    if(MACAddress(peer_addr) == BROADCAST) { LIB_LOGW("Broadcast is rudp prohibited"); fvalue = 0; }
     th->rudp.flag = fvalue;
+
     if(th->isACK())
     {
         lock_guard _(_sem);
         th->rudp.sequence = (++_sequence) & 0xFF;
-        seq = _sequence;
-
         uint64_t ack = _peerRecv[MACAddress(peer_addr)].sequence;
         if(!peer_addr)
         {
-            // TODO: min_elemnt ではなく on_receive 時に常に[00:...].sequence に情報ストック(比較した上で)した方がいい?
-            // Smallest of peers except NULL MACAddress
+            // Gets the minimum sequence of all peers exclude Null MAC
             auto it = std::min_element(_peerRecv.begin(), _peerRecv.end(),
                                        [](decltype(_peerRecv)::const_reference a, decltype(_peerRecv)::const_reference b)
                                        {
@@ -939,44 +898,58 @@ uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
 
     }
     if(data && length) { std::memcpy(obuf + sizeof(*th), data, length); } // Append payload
-    return seq;
+    return _sequence;
 }
 
 void Transceiver::_update(const unsigned long ms)
 {
-    static unsigned long sack{ms};
+    return;
 
-    if(ms > sack + 500 && _tid == 56)
+    std::vector<MACAddress> post;
+
+    // Send ACK if nothing is sent for a certain period of time after receiving ACK
+    // ACK受信後、一定期間何も送信していない場合は ACK 投げる
+    // Post ACK if the number of unrespond ACKs exceeds a certain number
+    // 未応答の ACK が一定数超えたら ACK なげる
+    with_lock([this, &post, &ms]()
     {
-        sack = ms;
-        //        post_ack(nullptr);
-    }
-    // TODO:一定期間送信動作していなければ ACK を投げる? nullptr では ack が 0.......
-    // post_ack();
+        for(auto& r : _peerRecv)
+        {
+            if(!r.first) { continue; } // skip Null MAC
+            if(r.second.time && ms > r.second.time + 750)
+            {
+                post.push_back(r.first);
+            }
 #if 0
-    受診してから一定期間送信していない場合
-    if(needReturnAck) { post_ack(addr); }
-#endif
+            // _sequence が同期されている前提...
+            if(this->_sequence > r.second.sequence + NNN)
+            {
 
+            }
+#endif
+        }
+    });
+
+    for(auto& addr : post)
+    {
+        LIB_LOGD("EmptyA:[%s]", addr.toString().c_str());
+        post_ack(addr.data());
+    }
 }
 
-void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* data)
+void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th)
 {
     {
         lock_guard _(_sem);
-        if(data->isACK())
+        if(th->isACK())
         {
-            //_peerRecv[addr].sequence =
-            auto seq = restore_u64_later(_peerRecv[addr].sequence, data->rudp.sequence);
-            auto ack = restore_u64_later(_peerRecv[addr].ack, data->rudp.ack);
+            auto seq = restore_u64_later(_peerRecv[addr].sequence, th->rudp.sequence);
+            auto ack = restore_u64_later(_peerRecv[addr].ack, th->rudp.ack);
             _peerRecv[addr] = Recv{ seq, ack, millis() };
-            LIB_LOGD("[RECV]:(%u):%llu/%llu", data->tid, _peerRecv[addr].sequence, _peerRecv[addr].ack);
+            LIB_LOGD("[RECV]:(%u):%llu/%llu", th->tid, _peerRecv[addr].sequence, _peerRecv[addr].ack);
         }
     }
-    if(data->isRST())
-    {
-        Communicator::instance().notify(Notify::Disconnect, &addr);
-    }
+    if(th->isRST()) { Communicator::instance().notify(Notify::Disconnect, &addr); }
 }
 
 void Transceiver::on_notify(const Notify notify, const void* arg)

@@ -14,7 +14,7 @@
 #endif
 #if !defined(DEVICE_B)
 #error "Need DEVICE_B defines is required. Specify in platformio.ini or write here."
-// #define DEVICE_B "12:34:56:78:9a:bc"
+// #define DEVICE_B "ba:98:76:54:32:10"
 #endif
 
 using namespace goblib::esp_now;
@@ -63,14 +63,7 @@ class ButtonTransceiver : public Transceiver
                 this->_received = true;
             }
         }, data);
-    }
-    virtual void onNotify(const Notify notify, const void* arg) override
-    {
-        if(notify == Notify::Disconnect)
-        {
-            auto addr = (const MACAddress*)arg;
-            M5_LOGE("Disconnect", addr->toString().c_str());
-        }
+        if(_received) { post_ack(addr); }
     }
     
   private:
@@ -101,6 +94,7 @@ class ColorTransceiver : public Transceiver
                 this->_received = true;
             }
         }, data);
+        if(_received) { post_ack(addr); }
     }
   private:
     volatile uint16_t _color{};
@@ -149,7 +143,7 @@ void setup()
     comm.registerTransceiver(&hbT);
 
     comm.begin(APP_ID); // Set unique application identifier
-    hbT.begin(Communicator::instance().address() < dest);
+    //hbT.begin(Communicator::instance().address() < dest);
     
     auto after = esp_get_free_heap_size();
     M5_LOGI("GEN space:%u", before - after);

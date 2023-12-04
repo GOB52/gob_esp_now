@@ -139,20 +139,44 @@ struct RUDP
     uint8_t sequence{}; //!< @brief Lower 8bit of sequence
     uint8_t ack{};      //!< @brief Lower 8bit of ack
     //uint8_t _sum{};
-    
-    // Flag-specific data
-    struct Payload_SYN
+
+    /*!
+      @struct SYN_Params
+      @brief Parameters for SYN
+      @warning Note that not all are supported
+     */
+    struct SYN_Params
     {
-        uint8_t session{};     // Session id
-        uint8_t outstanding{}; // 返答を待たずに遅れるセグメント数
-        uint8_t retransmissionTimeout{}; // 送ったデータに対して指定時間返答がなかったら再送信
-        uint8_t cumulativeAckTimeout{};  // セグメントを受け取ってから、この時間送信すべきものがなければACKのみ返す
-        uint8_t nullSegmentTimeout{};    // NUL 送信間隔
-        uint8_t transferStateTimeout{};  // 通信不能になってからこの時間のうちに TCS が来たら再開
-        uint8_t maxRetrans{};            // 最大再送回数(超えたら通信不能)
-        uint8_t maxCumAck{}; // 受け取ったがACKしていないセグメント数(超えたらACKのみ返す)
-        uint8_t maxOutOfSeq{}; // 来ていない手前のセグメントがあって、ACK だせないセグメントがこの数を超えたら EAK 送信
-        uint8_t maxAutoReset{}; // 通信不能になってから自動で 3WH 再試行していい回数
+        static constexpr uint16_t DEFAULT_RETRANSMISSION_TIMEOUT = (1000*2);
+        static constexpr uint16_t DEFAULT_CUMULATIVE_ACK_TIMEOUT = (500);
+        static constexpr uint16_t DEFAULT_NULL_TIMEOUT = (1000*10);
+        static constexpr uint16_t DEFAULT_TRANSFER_STATE_TIMEOUT = (1000*20);
+        static constexpr uint8_t DEFAULT_MAX_RETRANS = 4;
+        static constexpr uint8_t DEFAULT_MAX_CUM_ACK = 3;
+        static constexpr uint8_t DEFAULT_MAX_OUT_OF_SEQ = 5;
+        static constexpr uint8_t DEFAULT_MAX_AUTO_RESET = 1;
+
+        //        uint8_t session{};     // Session id
+        //        uint8_t outstanding{}; // 返答を待たずに遅れるセグメント数(as window size)
+        //
+        //        uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN}; //!< @brief The maximum number of octets that can be received by the peer
+        //! @brief The timeout value for retransmission of unacknowledged packets
+        uint16_t retransmissionTimeout{DEFAULT_RETRANSMISSION_TIMEOUT}; 
+        //! @brief The timeout value for sending an acknowledgment segment if another segment is not sent
+        uint16_t cumulativeAckTimeout{DEFAULT_CUMULATIVE_ACK_TIMEOUT};
+        //! @brief The timeout value for sending a null segment if a data segment has not been sent
+        uint16_t nullSegmentTimeout{DEFAULT_NULL_TIMEOUT};
+        //! @brief This timeout value indicate the amount of time the state information will be  saved for a connection before an auto reset occurs.        
+        uint16_t transferStateTimeout{DEFAULT_TRANSFER_STATE_TIMEOUT};
+        //! @brief The maximum number of times consecutive retransmission(s)
+        uint8_t maxRetrans{DEFAULT_MAX_RETRANS};
+        //! @brief The maximum number of acknowledgments that will be accumulated before sending an acknowledgment
+        uint8_t maxCumAck{DEFAULT_MAX_CUM_ACK};
+        //! @brief he maximum number of out of sequence packets that will be accumulated before an EACK segment is sent
+        uint8_t maxOutOfSeq{DEFAULT_MAX_OUT_OF_SEQ};
+        //! @brief The maximum number of consecutive auto reset that will performed before a connection is reset
+        uint8_t maxAutoReset{DEFAULT_MAX_AUTO_RESET};
+        
     }  __attribute__((__packed__));
 }  __attribute__((__packed__));
 
@@ -347,13 +371,14 @@ class Communicator
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     volatile bool _canSend{true};
-    unsigned long _sentTime{};
-    unsigned long _resendTimer{}, _resendInterval{DEFAULT_RESEND_INTERVAL};
-        //_locTime{LOSS_OF_CONNECTION_TIME};
 
     MACAddress _addr{}; // Self address
+    RUDP::SYN_Params _params{};
+
     std::vector<Transceiver*> _transceivers;
 
+    unsigned long _sentTime{};
+    unsigned long _resendTimer{};
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
     using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
 #else
@@ -361,7 +386,7 @@ class Communicator
 #endif
     queue_map_t _queue;
     queue_map_t _sentQueue;
-
+    
 #if !defined(NDEBUG)
     bool _debugEnable{};
     float _debugSendLoss{}, _debugRecvLoss{};
@@ -537,6 +562,7 @@ class Transceiver
 
     void build_peer_map();
     bool post_ack(const uint8_t* peer_addr);
+    inline bool post_ack(const MACAddress& addr) { return post_ack((bool)addr ? addr.data() : nullptr); }
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
     /*!
@@ -547,7 +573,7 @@ class Transceiver
     {
         uint64_t sequence;  // Sent by peer sequenceNo (It will be set to rudp.ack when send)
         uint64_t ack;       // Sequence received by the peer
-        unsigned long time; // Time ACK received
+        unsigned long time; // Time ACK received or Sent (Base for when to send ACK only)
     };
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
@@ -559,12 +585,12 @@ class Transceiver
     
   private:
     void _update(const unsigned long ms);
-    void on_receive(const MACAddress& addr, const TransceiverHeader* data);
+    void on_receive(const MACAddress& addr, const TransceiverHeader* th);
     void on_notify(const Notify notify, const void* arg);
     
   private:
     const uint8_t _tid{}; // Transceiver unique identifier
-    unsigned long _sentTime{};
+    unsigned long _sentTime{}, _emptyAckSendInterval{5000};
     uint64_t _sequence{}; // Send sequence
     recv_map_t _peerRecv;
     
