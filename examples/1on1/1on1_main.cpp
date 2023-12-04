@@ -63,7 +63,7 @@ class ButtonTransceiver : public Transceiver
                 this->_received = true;
             }
         }, data);
-        if(_received) { post_ack(addr); }
+        //        if(_received) { post_ack(addr); }
     }
     
   private:
@@ -107,6 +107,19 @@ HeartbeatTransceiver hbT(HEART_BEAT_TRANSCEIVER_ID);
 
 auto& lcd = M5.Display;
 goblib::UnifiedButton unifiedButton;
+
+ Communicator::config_t cfg =
+{
+    .retransmissionTimeout = 1000*10,
+    .cumulativeAckTimeout = 1000*8,
+    .transferStateTimeout = Communicator::DEFAULT_TRANSFER_STATE_TIMEOUT,
+    //    .maxRetrans = Communicator::DEFAULT_MAX_RETRANS,
+    .maxRetrans = 4,
+    .maxCumAck = Communicator::DEFAULT_MAX_CUM_ACK,
+    .maxOutOfSeq = Communicator::DEFAULT_MAX_OUT_OF_SEQ,
+    .maxAutoReset = Communicator::DEFAULT_MAX_AUTO_RESET
+};
+//
 }
 
 void setup()
@@ -142,7 +155,7 @@ void setup()
     comm.registerTransceiver(&btnT);
     comm.registerTransceiver(&hbT);
 
-    comm.begin(APP_ID); // Set unique application identifier
+    comm.begin(APP_ID, &cfg); // Set unique application identifier
     //hbT.begin(Communicator::instance().address() < dest);
     
     auto after = esp_get_free_heap_size();
@@ -156,6 +169,8 @@ void setup()
     //comm.setDebugSendLoss(0.25f);
     //comm.setDebugSendLoss(0.5f);
     //comm.setDebugSendLoss(0.9f);
+
+    //comm.setDebugReceiveLoss(0.5f);
 #endif
     
     lcd.setFont(&fonts::Font2);

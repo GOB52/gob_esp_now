@@ -140,44 +140,6 @@ struct RUDP
     uint8_t ack{};      //!< @brief Lower 8bit of ack
     //uint8_t _sum{};
 
-    /*!
-      @struct SYN_Params
-      @brief Parameters for SYN
-      @warning Note that not all are supported
-     */
-    struct SYN_Params
-    {
-        static constexpr uint16_t DEFAULT_RETRANSMISSION_TIMEOUT = (1000*2);
-        static constexpr uint16_t DEFAULT_CUMULATIVE_ACK_TIMEOUT = (500);
-        static constexpr uint16_t DEFAULT_NULL_TIMEOUT = (1000*10);
-        static constexpr uint16_t DEFAULT_TRANSFER_STATE_TIMEOUT = (1000*20);
-        static constexpr uint8_t DEFAULT_MAX_RETRANS = 4;
-        static constexpr uint8_t DEFAULT_MAX_CUM_ACK = 3;
-        static constexpr uint8_t DEFAULT_MAX_OUT_OF_SEQ = 5;
-        static constexpr uint8_t DEFAULT_MAX_AUTO_RESET = 1;
-
-        //        uint8_t session{};     // Session id
-        //        uint8_t outstanding{}; // 返答を待たずに遅れるセグメント数(as window size)
-        //
-        //        uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN}; //!< @brief The maximum number of octets that can be received by the peer
-        //! @brief The timeout value for retransmission of unacknowledged packets
-        uint16_t retransmissionTimeout{DEFAULT_RETRANSMISSION_TIMEOUT}; 
-        //! @brief The timeout value for sending an acknowledgment segment if another segment is not sent
-        uint16_t cumulativeAckTimeout{DEFAULT_CUMULATIVE_ACK_TIMEOUT};
-        //! @brief The timeout value for sending a null segment if a data segment has not been sent
-        uint16_t nullSegmentTimeout{DEFAULT_NULL_TIMEOUT};
-        //! @brief This timeout value indicate the amount of time the state information will be  saved for a connection before an auto reset occurs.        
-        uint16_t transferStateTimeout{DEFAULT_TRANSFER_STATE_TIMEOUT};
-        //! @brief The maximum number of times consecutive retransmission(s)
-        uint8_t maxRetrans{DEFAULT_MAX_RETRANS};
-        //! @brief The maximum number of acknowledgments that will be accumulated before sending an acknowledgment
-        uint8_t maxCumAck{DEFAULT_MAX_CUM_ACK};
-        //! @brief he maximum number of out of sequence packets that will be accumulated before an EACK segment is sent
-        uint8_t maxOutOfSeq{DEFAULT_MAX_OUT_OF_SEQ};
-        //! @brief The maximum number of consecutive auto reset that will performed before a connection is reset
-        uint8_t maxAutoReset{DEFAULT_MAX_AUTO_RESET};
-        
-    }  __attribute__((__packed__));
 }  __attribute__((__packed__));
 
 /*!
@@ -230,6 +192,63 @@ class Communicator
 {
 
   public:
+    ///@name Default config values
+    ///@{
+    static constexpr uint16_t DEFAULT_RETRANSMISSION_TIMEOUT = (200);
+    static constexpr uint16_t DEFAULT_CUMULATIVE_ACK_TIMEOUT = (100);
+    static constexpr uint16_t DEFAULT_NULL_TIMEOUT = (1000*5);
+    static constexpr uint16_t DEFAULT_TRANSFER_STATE_TIMEOUT = (1000*10);
+    static constexpr uint8_t DEFAULT_MAX_RETRANS = 16;
+    static constexpr uint8_t DEFAULT_MAX_CUM_ACK = 3;
+    static constexpr uint8_t DEFAULT_MAX_OUT_OF_SEQ = 5;
+    static constexpr uint8_t DEFAULT_MAX_AUTO_RESET = 1;
+    ///@}
+
+    /*!
+      @struct config_t
+      @brief Compatible with SYN parameters
+      @warning Note that not all are supported
+     */
+    struct config_t
+    {
+        //        uint8_t session{};     // Session id
+        //        uint8_t outstanding{}; // 返答を待たずに送れるセグメント数(as window size)
+        //
+        //        uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN}; //!< @brief The maximum number of octets that can be received by the peer
+        //! @brief The timeout value for retransmission of unacknowledged packets
+        uint16_t retransmissionTimeout;
+        //! @brief The timeout value for sending an acknowledgment segment if another segment is not sent
+        uint16_t cumulativeAckTimeout;
+        //! @brief The timeout value for sending a null segment if a data segment has not been sent
+        uint16_t nullSegmentTimeout;
+        //! @brief This timeout value indicate the amount of time the state information will be  saved for a connection before an auto reset occurs.        
+        uint16_t transferStateTimeout;
+        //! @brief The maximum number of times consecutive retransmission(s)
+        uint8_t maxRetrans;
+        //! @brief The maximum number of acknowledgments that will be accumulated before sending an acknowledgment
+        uint8_t maxCumAck;
+        //! @brief he maximum number of out of sequence packets that will be accumulated before an EACK segment is sent
+        uint8_t maxOutOfSeq;
+        //! @brief The maximum number of consecutive auto reset that will performed before a connection is reset
+        uint8_t maxAutoReset;
+
+        static config_t defaultValue()
+        {
+            config_t cfg =
+            {
+                DEFAULT_RETRANSMISSION_TIMEOUT,
+                DEFAULT_CUMULATIVE_ACK_TIMEOUT,
+                DEFAULT_NULL_TIMEOUT,
+                DEFAULT_TRANSFER_STATE_TIMEOUT,
+                DEFAULT_MAX_RETRANS,
+                DEFAULT_MAX_CUM_ACK,
+                DEFAULT_MAX_OUT_OF_SEQ,
+                DEFAULT_MAX_AUTO_RESET
+            };
+            return cfg;
+        }
+    }  __attribute__((__packed__));
+
     static Communicator& instance();
     
     ///@cond 0
@@ -237,17 +256,23 @@ class Communicator
     Communicator& operator=(const Communicator&) = delete;
     /// @endcond
 
+
+    ///@name Properties
+    ///@{
     const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
     // Gets the threshold for loss of connection (ms)
     //    unsigned long lossOfConnectionTime() const { return _locTime; } 
     // Set threshold for loss of connection (ms)
     //    void setLossOfConnectionTime(const unsigned long ms) { _locTime = ms; }
+
+    unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
+    ///@}
     
     /*!
       @brief Begin communication
       @param app_id Unique value for each application
     */
-    bool begin(const uint8_t app_id);
+    bool begin(const uint8_t app_id, const config_t* cfg = nullptr);
     void end();
     /*!
       @brief Update comminicator
@@ -362,7 +387,7 @@ class Communicator
     ///@}
 
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
-    void append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>& packet);    
+    //    void append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>& packet);    
     bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
     
   private:
@@ -373,19 +398,31 @@ class Communicator
     volatile bool _canSend{true};
 
     MACAddress _addr{}; // Self address
-    RUDP::SYN_Params _params{};
+    config_t _config{};
 
     std::vector<Transceiver*> _transceivers;
 
-    unsigned long _sentTime{};
-    unsigned long _resendTimer{};
+    unsigned long _lastSentTime{};
+
+    // 0:none 1:succeed 2:failed
+    struct SendState
+    {
+        enum State : uint8_t { None, Succeed, Failed};
+        State state{};
+        uint8_t retry{};
+        unsigned long sentTime{};
+    } __attribute__((__packed__));
+
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    using sent_map_t = std::map<MACAddress, SendState>;
     using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
 #else
     using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
+    using sent_map_t = vmap<MACAddress, SendState>;
 #endif
     queue_map_t _queue;
-    queue_map_t _sentQueue;
+    //    queue_map_t _sentQueue;
+    sent_map_t _sentState;
     
 #if !defined(NDEBUG)
     bool _debugEnable{};
@@ -417,13 +454,13 @@ class Transceiver
     ///@{
     int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
     inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
-    inline uint64_t sequence(const MACAddress& addr) const { return (_peerRecv.count(addr) == 1) ? _peerRecv.at(addr).sequence : 0ULL; } //!< @brief Gets the received sequence No,
-    inline uint64_t ack(const MACAddress& addr) const { return (_peerRecv.count(addr) == 1) ? _peerRecv.at(addr).ack : 0ULL; } //!< @brief Gets the received ACK No,
-    inline unsigned long ackTime(const MACAddress& addr) const { return (_peerRecv.count(addr) == 1) ? _peerRecv.at(addr).time : 0; } //!< @brief Gets the latest time of received ACK
+    inline uint64_t sequence(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).sequence : 0ULL; } //!< @brief Gets the received sequence No,
+    inline uint64_t ack(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).ack : 0ULL; } //!< @brief Gets the received ACK No,
+    inline unsigned long ackTime(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).time : 0; } //!< @brief Gets the latest time of received ACK
     //! @brief Was the specified sequence received by all peers?
     inline bool peerReceived(const uint64_t seq)
     {
-        return std::all_of(_peerRecv.begin(), _peerRecv.end(), [&seq](decltype(_peerRecv)::const_reference a)
+        return std::all_of(_peerInfo.begin(), _peerInfo.end(), [&seq](decltype(_peerInfo)::const_reference a)
         {
             return seq <= a.second.ack || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
         });
@@ -432,7 +469,7 @@ class Transceiver
     inline bool peerReceived(const uint8_t seq) { return peerReceived(restore_u64_earlier(_sequence, seq)); }
 
     //! @brief Was the specified sequence received at the specified peer?
-    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerRecv[addr].ack; }
+    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerInfo[addr].ack; }
     //! @brief Was the specified sequence received at the specified peer?
     inline bool peerReceived(const uint8_t seq, const MACAddress& addr) { return peerReceived(restore_u64_earlier(_sequence, seq), addr); }
     ///@}
@@ -573,18 +610,18 @@ class Transceiver
     {
         uint64_t sequence;  // Sent by peer sequenceNo (It will be set to rudp.ack when send)
         uint64_t ack;       // Sequence received by the peer
-        unsigned long time; // Time ACK received or Sent (Base for when to send ACK only)
+        unsigned long time; // Time ACK received
     };
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using recv_map_t = std::map<MACAddress, Recv>;
+    using info_map_t = std::map<MACAddress, Recv>;
 #else
-    using recv_map_t = vmap<MACAddress, Recv>;
+    using info_map_t = vmap<MACAddress, Recv>;
 #endif
-    const recv_map_t& peerRecv() const { return _peerRecv; }
+    const info_map_t& peerInfo() const { return _peerInfo; }
     
   private:
-    void _update(const unsigned long ms);
+    void _update(const unsigned long ms, const unsigned long lastSentTime, const uint16_t cumulativeAckTimeout, const uint8_t maxCumAck);
     void on_receive(const MACAddress& addr, const TransceiverHeader* th);
     void on_notify(const Notify notify, const void* arg);
     
@@ -592,7 +629,7 @@ class Transceiver
     const uint8_t _tid{}; // Transceiver unique identifier
     unsigned long _sentTime{}, _emptyAckSendInterval{5000};
     uint64_t _sequence{}; // Send sequence
-    recv_map_t _peerRecv;
+    info_map_t _peerInfo; // peerr information for RUDP
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     friend class Communicator;

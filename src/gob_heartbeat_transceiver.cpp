@@ -55,8 +55,10 @@ void HeartbeatTransceiver::update_sender(const unsigned long ms)
 {
     if(Communicator::instance().numOfPeer() > 0 && ms > _lastSent + _interval)
     {
-        // TODO: 通信するものがない場合のみ
-        // peerRec,ackTime から一定期間? (自動 ACK と合わせると良さそう)
+        //        if(_peerRev[
+
+
+
         post_heart_beat(ms);
     }
     // If no response is received _ccl times, the connection is considered lost.
@@ -65,7 +67,7 @@ void HeartbeatTransceiver::update_sender(const unsigned long ms)
 
     with_lock([this, &lost]()
     {
-        auto& pr = peerRecv();
+        auto& pr = peerInfo();
         for(auto& r : pr)
         {
             if(!(r.first)
