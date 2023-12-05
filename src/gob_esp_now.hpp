@@ -58,7 +58,7 @@ inline uint64_t restore_u64_earlier(const uint64_t u64, const uint8_t u8)
 // Restore values based on u64 (assuming u8 is later)
 inline uint64_t restore_u64_later(const uint64_t u64, const uint8_t u8)
 {
-    return (u64 & ~static_cast<uint64_t>(0xff)) | u8;
+    return ((u64 + ((uint8_t)(u64 & 0xFF) > u8) * 0x100) & ~static_cast<uint64_t>(0xff)) | u8;
 }
 
 /*!
@@ -197,11 +197,11 @@ class Communicator
     static constexpr uint16_t DEFAULT_RETRANSMISSION_TIMEOUT = (200);
     static constexpr uint16_t DEFAULT_CUMULATIVE_ACK_TIMEOUT = (100);
     static constexpr uint16_t DEFAULT_NULL_TIMEOUT = (1000*5);
-    static constexpr uint16_t DEFAULT_TRANSFER_STATE_TIMEOUT = (1000*10);
+    static constexpr uint16_t DEFAULT_TRANSFER_STATE_TIMEOUT = 0;
     static constexpr uint8_t DEFAULT_MAX_RETRANS = 16;
-    static constexpr uint8_t DEFAULT_MAX_CUM_ACK = 3;
-    static constexpr uint8_t DEFAULT_MAX_OUT_OF_SEQ = 5;
-    static constexpr uint8_t DEFAULT_MAX_AUTO_RESET = 1;
+    static constexpr uint8_t DEFAULT_MAX_CUM_ACK = 4;
+    static constexpr uint8_t DEFAULT_MAX_OUT_OF_SEQ = 0;
+    static constexpr uint8_t DEFAULT_MAX_AUTO_RESET = 0;
     ///@}
 
     /*!
@@ -456,7 +456,7 @@ class Transceiver
     inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
     inline uint64_t sequence(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).sequence : 0ULL; } //!< @brief Gets the received sequence No,
     inline uint64_t ack(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).ack : 0ULL; } //!< @brief Gets the received ACK No,
-    inline unsigned long ackTime(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).time : 0; } //!< @brief Gets the latest time of received ACK
+    inline unsigned long ackTime(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).recvTime : 0; } //!< @brief Gets the latest time of received ACK
     //! @brief Was the specified sequence received by all peers?
     inline bool peerReceived(const uint64_t seq)
     {
@@ -602,33 +602,32 @@ class Transceiver
     inline bool post_ack(const MACAddress& addr) { return post_ack((bool)addr ? addr.data() : nullptr); }
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
-    /*!
-      @struct Recv
-      @brief received information
-     */
-    struct Recv
+    struct Info
     {
-        uint64_t sequence;  // Sent by peer sequenceNo (It will be set to rudp.ack when send)
-        uint64_t ack;       // Sequence received by the peer
-        unsigned long time; // Time ACK received
-    };
+        // received
+        uint64_t sequence;      // Sent received by peer (It will be set to rudp.ack when send)
+        uint64_t ack;           // ACK received by the peer
+        unsigned long recvTime; // Time ACK received
+        // sent
+        uint64_t sentAck;       // Sent ACK
+    }__attribute__((__packed__));
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using info_map_t = std::map<MACAddress, Recv>;
+    using info_map_t = std::map<MACAddress, Info>;
 #else
-    using info_map_t = vmap<MACAddress, Recv>;
+    using info_map_t = vmap<MACAddress, Info>;
 #endif
     const info_map_t& peerInfo() const { return _peerInfo; }
     
   private:
-    void _update(const unsigned long ms, const unsigned long lastSentTime, const uint16_t cumulativeAckTimeout, const uint8_t maxCumAck);
+    void _update(const unsigned long ms, const unsigned long lastSentTime, const Communicator::config_t& cfg);
     void on_receive(const MACAddress& addr, const TransceiverHeader* th);
     void on_notify(const Notify notify, const void* arg);
     
   private:
     const uint8_t _tid{}; // Transceiver unique identifier
     unsigned long _sentTime{}, _emptyAckSendInterval{5000};
-    uint64_t _sequence{}; // Send sequence
+    uint64_t _sequence{254}; // Send sequence
     info_map_t _peerInfo; // peerr information for RUDP
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore

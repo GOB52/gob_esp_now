@@ -94,7 +94,6 @@ class ColorTransceiver : public Transceiver
                 this->_received = true;
             }
         }, data);
-        if(_received) { post_ack(addr); }
     }
   private:
     volatile uint16_t _color{};
@@ -108,17 +107,44 @@ HeartbeatTransceiver hbT(HEART_BEAT_TRANSCEIVER_ID);
 auto& lcd = M5.Display;
 goblib::UnifiedButton unifiedButton;
 
- Communicator::config_t cfg =
+// 独自通信設定例
+Communicator::config_t cfg =
 {
+    // 再送タイマー待ち時間
     .retransmissionTimeout = 1000*10,
+    //.cumulativeAckTimeout = 400,
+    // 累積確認応答タイマー待ち時間
+    //.cumulativeAckTimeout = 200,
     .cumulativeAckTimeout = 1000*8,
-    .transferStateTimeout = Communicator::DEFAULT_TRANSFER_STATE_TIMEOUT,
+    // NUL 送信タイマー (Heartbeat)
+    .nullSegmentTimeout = Communicator::DEFAULT_NULL_TIMEOUT,
+    // 転送状態タイマー(未対応)
+    .transferStateTimeout = Communicator::DEFAULT_TRANSFER_STATE_TIMEOUT, 
+    // 最大再送信回数
     //    .maxRetrans = Communicator::DEFAULT_MAX_RETRANS,
-    .maxRetrans = 4,
+    .maxRetrans = 10,
+    // 確認応答貯留最大数
     .maxCumAck = Communicator::DEFAULT_MAX_CUM_ACK,
+    // EACK 送信基準貯留数 (未対応)
     .maxOutOfSeq = Communicator::DEFAULT_MAX_OUT_OF_SEQ,
+    // 自動リセット回数(未対応)
     .maxAutoReset = Communicator::DEFAULT_MAX_AUTO_RESET
 };
+
+bool postColor()
+{
+    bool ret{};
+
+    uint16_t color = esp_random() & 0xFFFF;
+    M5_LOGI("Post color:%x", color);
+    lcd.clear(color);
+    lcd.setTextColor(color ^ 0xFFFF, color);
+
+    // So it may not reach to destination, because post unreliable.
+    ret = colorT.postUnreliable(color);
+    if(!ret) { M5_LOGE("Failed to post color"); }
+    return ret;
+}
 //
 }
 
@@ -150,7 +176,7 @@ void setup()
     }
 
     comm.registerPeer(dest);
-    //    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
+    //comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
     comm.registerTransceiver(&colorT);
     comm.registerTransceiver(&btnT);
     comm.registerTransceiver(&hbT);
@@ -197,40 +223,13 @@ void loop()
     {
         M5_LOGI("Post btn:%x", d.btn);
         // Data accumulation(Send not yet).
-#if 1
-        //        if(!btnT.postUnreliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
-        //        if(!btnT.postUnreliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
-        if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
-        //        if(!btnT.postUnreliable(dest, d)) { M5_LOGE("Failed to post"); } // => *1 send on update()
-#else
-        if(!btnT.sendReliable(dest, d)) { M5_LOGE("Failed to send"); } // Send directly
-#endif
+        if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post btn"); }
         last = d;
+        if(false && M5.BtnB.wasHold())
+        {
+            postColor();
+        }
     }
-
-#if !defined(NDEBUG)
-    if(M5.BtnC.wasClicked())
-    {
-        M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
-    }
-#endif
-    
-#if 0    
-    // Change background color every 30 seconds and send
-    // The sending side is assumed to be the side with the lower MACAddress.
-    auto now = millis();
-    if(now - ms >= 1000 * 30 && Communicator::instance().address() < dest)
-    {
-        uint16_t color = esp_random() & 0xFFFF;
-        M5_LOGI("Post color:%x", color);
-        lcd.clear(color);
-        lcd.setTextColor(color ^ 0xFFFF, color);
-        // If no destination is specified, send to the registered peer.
-        if(!colorT.postReliable(color)) { M5_LOGE("Failed to post"); }
-        ms = now;
-        dirty = true;
-    }
-
 
     // Change to received background color.
     if(colorT.with_lock([](){ return colorT.received(); }))
@@ -243,9 +242,12 @@ void loop()
             lcd.setTextColor(color ^ 0xFFFF, color);
         });
         dirty = true;
+    }
 
-        // Return ACK
-        ///colorT.postReliable(dest);
+#if !defined(NDEBUG)
+    if(M5.BtnC.wasClicked())
+    {
+        M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
     }
 #endif
     
