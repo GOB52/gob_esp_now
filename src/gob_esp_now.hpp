@@ -249,6 +249,24 @@ class Communicator
         }
     }  __attribute__((__packed__));
 
+    struct SendState
+    {
+        enum State : uint8_t { None, Succeed, Failed };
+        State state{};
+        uint8_t retry{};
+        unsigned long sentTime{};
+        inline void reset() { state = None; }
+
+    } __attribute__((__packed__));
+
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
+    using state_map_t = std::map<MACAddress, SendState>;
+#else
+    using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
+    using state_map_t = vmap<MACAddress, SendState>;
+#endif
+    
     static Communicator& instance();
     
     ///@cond 0
@@ -389,6 +407,8 @@ class Communicator
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
     //    void append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>& packet);    
     bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
+
+    void reset_sent_state(const MACAddress& addr);
     
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
@@ -403,26 +423,10 @@ class Communicator
     std::vector<Transceiver*> _transceivers;
 
     unsigned long _lastSentTime{};
-
-    // 0:none 1:succeed 2:failed
-    struct SendState
-    {
-        enum State : uint8_t { None, Succeed, Failed};
-        State state{};
-        uint8_t retry{};
-        unsigned long sentTime{};
-    } __attribute__((__packed__));
-
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using sent_map_t = std::map<MACAddress, SendState>;
-    using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
-#else
-    using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
-    using sent_map_t = vmap<MACAddress, SendState>;
-#endif
+    MACAddress _lastSentAddr{BROADCAST};
+    
     queue_map_t _queue;
-    //    queue_map_t _sentQueue;
-    sent_map_t _sentState;
+    state_map_t _sentState;
     
 #if !defined(NDEBUG)
     bool _debugEnable{};
@@ -604,12 +608,15 @@ class Transceiver
 
     struct Info
     {
+        bool needReturn{};        // Need return ACK?
         // received
-        uint64_t sequence;      // Sent received by peer (It will be set to rudp.ack when send)
-        uint64_t ack;           // ACK received by the peer
-        unsigned long recvTime; // Time ACK received
+        uint64_t sequence{};      // Sequence received by peer (It will be set to rudp.ack when send)
+        uint64_t ack{};           // ACK received by the peer
+        unsigned long recvTime{}; // ACK received time
         // sent
-        uint64_t sentAck;       // Sent ACK
+        uint64_t sentSequence{};  // Sent my sequence
+        uint64_t sentAck{};       // Sent ACK
+        unsigned long sentTime{}; // Sent ACK time
     }__attribute__((__packed__));
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
@@ -620,14 +627,14 @@ class Transceiver
     const info_map_t& peerInfo() const { return _peerInfo; }
     
   private:
-    void _update(const unsigned long ms, const unsigned long lastSentTime, const Communicator::config_t& cfg);
+    void _update(const unsigned long ms, Communicator::state_map_t& sentState,  const Communicator::config_t& cfg);
     void on_receive(const MACAddress& addr, const TransceiverHeader* th);
     void on_notify(const Notify notify, const void* arg);
     
   private:
     const uint8_t _tid{}; // Transceiver unique identifier
     unsigned long _sentTime{}, _emptyAckSendInterval{5000};
-    uint64_t _sequence{254}; // Send sequence
+    uint64_t _sequence{}; // Send sequence
     info_map_t _peerInfo; // peerr information for RUDP
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
