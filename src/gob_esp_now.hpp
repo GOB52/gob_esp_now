@@ -155,14 +155,16 @@ struct TransceiverHeader
 
     ///@name Properties
     ///@{
-    inline bool isReliable() const { return rudp.flag; } //!< @brief is reliable data?
+    inline bool isReliable() const   { return rudp.flag; } //!< @brief is reliable data?
     inline bool isUnreliable() const { return !rudp.flag; } //!< @brief is unreliable data?
-    inline bool isSYN() const { return (rudp.flag & to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN?
-    inline bool isRST() const { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
-    inline bool isACK() const { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
-    inline bool hasPayload() const { return size > sizeof(*this); } //!< @brief Has payload?
+    inline bool isSYN() const        { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN?
+    inline bool isSYN_ACK() const    { return (rudp.flag == to_underlying(RUDP::Flag::SYN_ACK)); } //!< @brief is SYN?
+    inline bool isRST() const        { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
+    inline bool isACK() const        { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
+    inline bool isNUL() const        { return (rudp.flag == to_underlying(RUDP::Flag::NUL)); } //!< @brief is NUL?
+    inline bool hasPayload() const   { return size > sizeof(*this); } //!< @brief Has payload?
     ///@}
-    inline uint8_t* payload() const { return ((uint8_t*)this) + sizeof(*this); } //!< @brief Gets the payload pointer
+    inline uint8_t* payload() const  { return hasPayload() ? ((uint8_t*)this) + sizeof(*this) : nullptr; } //!< @brief Gets the payload pointer if exists.
 }  __attribute__((__packed__));
 
 
@@ -194,11 +196,11 @@ class Communicator
   public:
     ///@name Default config values
     ///@{
-    static constexpr uint16_t DEFAULT_RETRANSMISSION_TIMEOUT = (200);
-    static constexpr uint16_t DEFAULT_CUMULATIVE_ACK_TIMEOUT = (100);
-    static constexpr uint16_t DEFAULT_NULL_TIMEOUT = (1000*5);
+    static constexpr uint16_t DEFAULT_RETRANSMISSION_TIMEOUT = (320);
+    static constexpr uint16_t DEFAULT_CUMULATIVE_ACK_TIMEOUT = (80);
+    static constexpr uint16_t DEFAULT_NULL_TIMEOUT = (1000*10);
     static constexpr uint16_t DEFAULT_TRANSFER_STATE_TIMEOUT = 0;
-    static constexpr uint8_t DEFAULT_MAX_RETRANS = 16;
+    static constexpr uint8_t DEFAULT_MAX_RETRANS = 8;
     static constexpr uint8_t DEFAULT_MAX_CUM_ACK = 4;
     static constexpr uint8_t DEFAULT_MAX_OUT_OF_SEQ = 0;
     static constexpr uint8_t DEFAULT_MAX_AUTO_RESET = 0;
@@ -249,12 +251,24 @@ class Communicator
         }
     }  __attribute__((__packed__));
 
+    /*!
+      @enum Role
+      @brief Role of communicator
+     */
+    enum class Role : uint8_t
+    {
+        NoRole,    //!< @brief No role
+        Primary,   //!< @brief Primary. Also known as master, controller(ESP-NOW Terminology)
+        Secondary, //!< @brief Secondary. Also known as slave
+    };
+    
     struct SendState
     {
         enum State : uint8_t { None, Succeed, Failed };
         State state{};
         uint8_t retry{};
         unsigned long sentTime{};
+        unsigned long recvTime{};
         inline void reset() { state = None; }
 
     } __attribute__((__packed__));
@@ -274,17 +288,17 @@ class Communicator
     Communicator& operator=(const Communicator&) = delete;
     /// @endcond
 
-
     ///@name Properties
     ///@{
-    const MACAddress& address() const { return _addr; } //!< @brief Gets the self address
-    // Gets the threshold for loss of connection (ms)
-    //    unsigned long lossOfConnectionTime() const { return _locTime; } 
-    // Set threshold for loss of connection (ms)
-    //    void setLossOfConnectionTime(const unsigned long ms) { _locTime = ms; }
-
-    unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
+    inline const MACAddress& address() const  { return _addr; } //!< @brief Gets the self address
+    inline unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
+    inline Role role() const        { return _role; }
+    inline bool isPrimary() const   { return _role == Role::Primary; }
+    inline bool isSecondary() const { return _role == Role::Secondary; }
+    inline bool isNoRole() const   { return _role == Role::NoRole; }
     ///@}
+
+    void setRole(const Role r) { _role = r; }
     
     /*!
       @brief Begin communication
@@ -416,6 +430,7 @@ class Communicator
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     volatile bool _canSend{true};
+    Role _role{Role::NoRole};
 
     MACAddress _addr{}; // Self address
     config_t _config{};
@@ -602,8 +617,15 @@ class Transceiver
     virtual void onNotify(const Notify /*notify*/, const void* /*arg*/) { /* nop */ }
 
     void build_peer_map();
-    bool post_ack(const uint8_t* peer_addr);
-    inline bool post_ack(const MACAddress& addr) { return post_ack((bool)addr ? addr.data() : nullptr); }
+
+    // WARN:Locked in this >>
+    bool post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, const void* data = nullptr, const uint8_t length = 0);
+    inline bool post_ack(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::ACK); }
+    inline bool post_ack(const MACAddress& addr)   { return post_ack((bool)addr ? addr.data() : nullptr); }
+    inline bool post_nul(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::NUL); }
+    inline bool post_nul(const MACAddress& addr)   { return post_nul((bool)addr ? addr.data() : nullptr); }
+    // <<
+    
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
     struct Info
