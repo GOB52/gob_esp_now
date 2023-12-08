@@ -4,7 +4,6 @@
 */
 #include <M5Unified.h>
 #include <gob_esp_now.hpp>
-#include <gob_heartbeat_transceiver.hpp>
 #include <gob_unifiedButton.hpp> // for CoreS3
 #include <WiFi.h>
 
@@ -22,9 +21,8 @@ using namespace goblib::esp_now;
 namespace
 {
 constexpr uint8_t APP_ID = 12;
-constexpr uint8_t HEART_BEAT_TRANSCEIVER_ID = 34;
-constexpr uint8_t BUTTON_TRANSCEIVER_ID = 56;
-constexpr uint8_t COLOR_TRANSCEIVER_ID = 78;
+constexpr uint8_t BUTTON_TRANSCEIVER_ID = 34;
+constexpr uint8_t COLOR_TRANSCEIVER_ID = 56;
 
 MACAddress dest;
 
@@ -51,17 +49,14 @@ class ButtonTransceiver : public Transceiver
     const ButtonData& data() const { return _data; }
     
     // Transmitted data with APP_ID and Transceiver ID matching comes in. (Called from another task)
-    virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override
+    virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) override
     {
-        with_lock([this](const TransceiverHeader* th)
+        with_lock([this](const void* d)
         {
-            if(th->hasPayload())
-            {
-                auto pd = (ButtonData*)th->payload();
-                M5_LOGI("[RB]:%u:Btn:%x", th->rudp.sequence, pd->btn);
-                this->_data = *pd;
-                this->_received = true;
-            }
+            auto pd = (ButtonData*)d;
+            M5_LOGI("[RB]:Btn:%x", pd->btn);
+            this->_data = *pd;
+            this->_received = true;
         }, data);
         //        if(_received) { post_ack(addr); }
     }
@@ -81,18 +76,14 @@ class ColorTransceiver : public Transceiver
     uint16_t data() const { return _color; }
 
     // Transmitted data with APP_ID and Transceiver ID matching comes in. (Called from another task)
-    virtual void onReceive(const MACAddress& addr, const TransceiverHeader* data) override
+    virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) override
     {
-        with_lock([this](const TransceiverHeader* th)
+        with_lock([this](const void* d)
         {
-            if(th->hasPayload())
-            {
-                M5_LOGD("Clr");
-                auto pd = (uint16_t*)th->payload();
-                M5_LOGI("[RC]:%u:Clr:%x", th->rudp.sequence, *pd);
-                this->_color = *pd;
-                this->_received = true;
-            }
+            auto pd = (uint16_t*)d;
+            M5_LOGI("Clr:%x", *pd);
+            this->_color = *pd;
+            this->_received = true;
         }, data);
     }
   private:
@@ -102,7 +93,6 @@ class ColorTransceiver : public Transceiver
 
 ButtonTransceiver btnT(BUTTON_TRANSCEIVER_ID);
 ColorTransceiver colorT(COLOR_TRANSCEIVER_ID);
-HeartbeatTransceiver hbT(HEART_BEAT_TRANSCEIVER_ID);
 
 auto& lcd = M5.Display;
 goblib::UnifiedButton unifiedButton;
@@ -111,20 +101,21 @@ goblib::UnifiedButton unifiedButton;
 Communicator::config_t cfg =
 {
     // 再送タイマー待ち時間
-    .retransmissionTimeout = 1000*10,
+    .retransmissionTimeout = 1000*4,
     //.cumulativeAckTimeout = 400,
     // 累積確認応答タイマー待ち時間
     //.cumulativeAckTimeout = 200,
-    .cumulativeAckTimeout = 1000*8,
+    .cumulativeAckTimeout = 1000*2,
     // NUL 送信タイマー (Heartbeat)
     .nullSegmentTimeout = Communicator::DEFAULT_NULL_TIMEOUT,
     // 転送状態タイマー(未対応)
     .transferStateTimeout = Communicator::DEFAULT_TRANSFER_STATE_TIMEOUT, 
     // 最大再送信回数
     //    .maxRetrans = Communicator::DEFAULT_MAX_RETRANS,
-    .maxRetrans = 10,
+    .maxRetrans = 4,
     // 確認応答貯留最大数
-    .maxCumAck = Communicator::DEFAULT_MAX_CUM_ACK,
+    //.maxCumAck = Communicator::DEFAULT_MAX_CUM_ACK,
+    .maxCumAck = 4,
     // EACK 送信基準貯留数 (未対応)
     .maxOutOfSeq = Communicator::DEFAULT_MAX_OUT_OF_SEQ,
     // 自動リセット回数(未対応)
@@ -141,7 +132,8 @@ bool postColor()
     lcd.setTextColor(color ^ 0xFFFF, color);
 
     // So it may not reach to destination, because post unreliable.
-    ret = colorT.postUnreliable(color);
+    ret = colorT.postUnreliable(dest, color);
+    //ret = colorT.postUnreliable(color);
     if(!ret) { M5_LOGE("Failed to post color"); }
     return ret;
 }
@@ -167,6 +159,10 @@ void setup()
     if(MACAddress(DEVICE_B) == comm.address()) { dest.parse(DEVICE_A); }
     M5_LOGI("  Self: %s", comm.address().toString().c_str());
     M5_LOGI("Target: %s", dest.toString().c_str());
+    //
+
+    ///////////////////////////
+#if 0
     if(!dest)
     {
         M5_LOGE("Not the device at the address specified by define");
@@ -174,18 +170,27 @@ void setup()
         lcd.clear(TFT_RED);
         while(1) { delay(10000); }
     }
+#endif
 
-    comm.registerPeer(dest);
-    //comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
+    // Multicasting
+    //uint8_t multicastAddressA[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAA};
+    //dest = MACAddress(multicastAddressA);
+
+    if(!comm.registerPeer(dest)) { M5_LOGE("Failed to register"); }
+    //    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
+    //    comm.registerPeer(MACAddress("a4:cf:12:6d:87:1c")); // device none
+
+    //comm.registerPeer(MACAddress("f4:12:fa:84:8e:48")); 
+
     comm.registerTransceiver(&colorT);
     comm.registerTransceiver(&btnT);
-    comm.registerTransceiver(&hbT);
 
+    comm.setRole(comm.address() < dest ? Communicator::Role::Primary : Communicator::Role::Secondary);
     comm.begin(APP_ID, &cfg); // Set unique application identifier
-    //hbT.begin(Communicator::instance().address() < dest);
+    //comm.begin(APP_ID);
     
     auto after = esp_get_free_heap_size();
-    M5_LOGI("GEN space:%u", before - after);
+    M5_LOGI("library usage:%u", before - after);
     
 #if !defined(NDEBUG)
     M5_LOGI("%s", comm.debugInfo().c_str());
@@ -207,7 +212,7 @@ void setup()
 
 void loop()
 {
-    static unsigned long ms = millis();
+    //    static unsigned long ms = millis();
     bool dirty{};
     
     M5.update();
@@ -224,13 +229,14 @@ void loop()
         M5_LOGI("Post btn:%x", d.btn);
         // Data accumulation(Send not yet).
         if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post btn"); }
+        //if(!btnT.postReliable(d)) { M5_LOGE("Failed to post btn"); }
         last = d;
-        if(false && M5.BtnB.wasHold())
-        {
-            postColor();
-        }
     }
-
+    if(M5.BtnB.wasHold())
+    {
+        postColor();
+    }
+    
     // Change to received background color.
     if(colorT.with_lock([](){ return colorT.received(); }))
     {
@@ -276,15 +282,16 @@ void loop()
 
     //
     uint64_t ts,rs,ack;
+    auto fhgt= lcd.fontHeight();
     lcd.setCursor(8,0);
-    std::tie(ts, rs, ack) = btnT.with_lock([](){ return std::make_tuple(btnT.sequence(), btnT.sequence(dest), btnT.ack(dest)); });
-    lcd.printf("[B] S:%llu R:%llu A:%llu", ts, rs, ack);
-    lcd.setCursor(8,13*1);
-    std::tie(ts, rs, ack) = colorT.with_lock([](){ return std::make_tuple(colorT.sequence(), colorT.sequence(dest), colorT.ack(dest)); });
-    lcd.printf("[C] S:%llu R:%llu A:%llu", ts, rs, ack);
-    lcd.setCursor(8,13*2);
+    //    std::tie(ts, rs, ack) = btnT.with_lock([](){ return std::make_tuple(btnT.sequence(), btnT.sequence(dest), btnT.ack(dest)); });
+    //    lcd.printf("[B] S:%llu R:%llu A:%llu", ts, rs, ack);
+    //lcd.setCursor(8,fhgt*1);
+    //    std::tie(ts, rs, ack) = colorT.with_lock([](){ return std::make_tuple(colorT.sequence(), colorT.sequence(dest), colorT.ack(dest)); });
+    //    lcd.printf("[C] S:%llu R:%llu A:%llu", ts, rs, ack);
+    lcd.setCursor(8,fhgt*1);
     lcd.printf("Heap:%u", esp_get_free_heap_size());
-    lcd.setCursor(8,13*3);
+    lcd.setCursor(8,fhgt*2);
     lcd.printf("MAC:%s", Communicator::instance().address().toString(true).c_str());
 
     unifiedButton.draw(dirty);

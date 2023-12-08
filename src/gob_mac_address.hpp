@@ -24,7 +24,7 @@ class MACAddress
 {
   public:
     /// @name Constructor
-    /// @warning Be careful with endians
+    /// @warning Be careful with endians if argument is uint64_t
     /// @warning 0x0000123456789abc => bc:9a:78:56:34:12 (little endian)
     /// @{
     constexpr MACAddress() {}
@@ -100,9 +100,9 @@ class MACAddress
       @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/misc_system_api.html
     */
     bool get(const esp_mac_type_t mtype);
-    bool parse(const char* str); //!< @brief Obtains an instance from a text string such as "12:34:56:78:aB:Cd"
+    bool parse(const char* str); //!< @brief Obtains an instance from a text string such as "00:00:5e:00:53:00"
     /*!
-      @brief Outputs as a String, such as "fe:dc:ba:98:76:54"
+      @brief Outputs as a String, such as "00:00:5e:00:53:00"
       @param mask Mask upper address if true
      */
     String toString(const bool mask = false) const;
@@ -116,7 +116,7 @@ class MACAddress
   private:
     union
     {
-        uint64_t _addr64{}; // Using higher 48 bits
+        uint64_t _addr64{}; // Using lower 48 bits
         uint8_t _addr[ESP_NOW_ETH_ALEN];
     };
 };

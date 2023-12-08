@@ -18,6 +18,7 @@
 #include <initializer_list>
 #include <memory>
 #include <vector>
+#include <type_traits>
 #include <FreeRTOS/freeRTOS.h>
 #include <FreeRTOS/semphr.h>
 #include <esp_now.h>
@@ -84,12 +85,13 @@ struct lock_guard
 */
 struct CommunicatorHeader
 {
-    static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture "GE"
-    static constexpr uint8_t VERSION = 0x00;      //!< @brief Header version
+    static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture
 
+    enum Type : uint8_t { AllPeer, };
+    
     uint16_t signeture{SIGNETURE}; //!< @brief Signeture of the Communicator's data
-    uint8_t  version{VERSION};     //!< @brief Version of the header
     uint8_t  app_id{};             //!< @brief Application-specific ID
+    Type     type{};               //!< @brief type of packet
     uint8_t  count{};              //!< @brief Number of transceiver data
     uint8_t  size{sizeof(*this)};  //!< @brief Size of packet [ |CH|TH...|TH......|TH.| ]
     // Transceiver data continues for count times.
@@ -112,6 +114,7 @@ struct RUDP
     static constexpr uint8_t _NUL = 0x08; // Heartbeat
     static constexpr uint8_t _CHK = 0x04; // Calculate checksum include payload?
     static constexpr uint8_t _TCS = 0x02; // Demand for resumption
+    //    static constexpr uint8_t _ALL = 0x01; // All peer?(gob_esp_now proprietary)
     ///@endcond
     
     /*!
@@ -124,6 +127,7 @@ struct RUDP
          SYN     = _SYN,        //!< @brief Begin session
          SYN_ACK = _SYN | _ACK, //!< @brief Begin session with ACK
          ACK     = _ACK,        //!< @brief Acknowledge (with payload if exists)
+         //         ACK_ALL = _ACK | _ALL,
          //ACK_CHK = _ACK | _CHK,
          //EAK     = _ACK | _EAK,
          RST     = _RST,        //!< @brief End session
@@ -472,27 +476,53 @@ class Transceiver
     ///@name Properties
     ///@{
     int8_t identifier() const { return _tid; } //!< @brief Gets the identifier
+#if 0
     inline uint64_t sequence() const { return _sequence; } //!< @brief Gets the my sequence No.
     inline uint64_t sequence(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).sequence : 0ULL; } //!< @brief Gets the received sequence No,
     inline uint64_t ack(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).ack : 0ULL; } //!< @brief Gets the received ACK No,
     inline unsigned long ackTime(const MACAddress& addr) const { return (_peerInfo.count(addr) == 1) ? _peerInfo.at(addr).recvTime : 0; } //!< @brief Gets the latest time of received ACK
+#endif
+
+
+#if 0    
     //! @brief Was the specified sequence received by all peers?
     inline bool peerReceived(const uint64_t seq)
     {
         return std::all_of(_peerInfo.begin(), _peerInfo.end(), [&seq](decltype(_peerInfo)::const_reference a)
         {
-            return seq <= a.second.ack || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
+            return seq <= a.second.recv.ack || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
         });
     }
     //! @brief Was the specified sequence received by all peers?
     inline bool peerReceived(const uint8_t seq) { return peerReceived(restore_u64_earlier(_sequence, seq)); }
 
     //! @brief Was the specified sequence received at the specified peer?
-    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerInfo[addr].ack; }
+    inline bool peerReceived(const uint64_t seq, const MACAddress& addr) { return seq <= _peerInfo[addr].recv.ack; }
     //! @brief Was the specified sequence received at the specified peer?
-    inline bool peerReceived(const uint8_t seq, const MACAddress& addr) { return peerReceived(restore_u64_earlier(_sequence, seq), addr); }
+    inline bool peerReceived(const uint8_t seq, const MACAddress& addr) { return peerReceived(restore_u64_earlier(_peerInfo[addr].recv.seq, seq), addr); }
     ///@}
+#endif
 
+    #if 0
+    inline bool delivered(const uint64_t seq)
+    { 
+        return std::all_of(_peerInfo.begin(), _peerInfo.end(), [&seq](decltype(_peerInfo)::const_reference a)
+        {
+            return seq <= a.second.recv.ack || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
+        });
+    }
+    inline bool delivered(const uint8_t seq) { return delivered(restore_u64_earlier(_peerInfo[MACAddress()].sequence, seq)); }
+#endif
+    inline bool delivered(const uint64_t seq, const MACAddress& addr)
+    {
+        //        return seq <= ((bool)addr ? _peerInfo[addr].recv.ack : _peerInfo[addr].recvA.ack);
+        return seq <= _peerInfo[addr].uni.recvAck;
+    }
+    inline bool delivered(const uint8_t  seq, const MACAddress& addr)
+    {
+        return delivered(restore_u64_earlier(_peerInfo[addr].uni.sequence, seq), addr);
+    }
+    
     //! @brief Reset sequence,ack...
     void reset();
     //! @brief Clear information about the specified address
@@ -609,15 +639,18 @@ class Transceiver
 
     /*!
       @brief Receiving callbacks
+      @param addr Sender MAC address
+      @param data Pointer of the payload data
+      @param length Length of data
+      @note Called only exists the payload
       @warning The receiving callback function also runs from the Wi-Fi task,
       @warning <em><strong>So, do not do lengthy operations in the callback function.</strong></em>
     */
-    virtual void onReceive(const MACAddress& /*addr*/, const TransceiverHeader* /*data*/) {}
+    virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) {}
     //! @brief Notification callbacks
     virtual void onNotify(const Notify /*notify*/, const void* /*arg*/) { /* nop */ }
 
     void build_peer_map();
-
     // WARN:Locked in this >>
     bool post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, const void* data = nullptr, const uint8_t length = 0);
     inline bool post_ack(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::ACK); }
@@ -628,35 +661,38 @@ class Transceiver
     
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
-    struct Info
+    struct PeerInfo
     {
-        bool needReturn{};        // Need return ACK?
-        // received
-        uint64_t sequence{};      // Sequence received by peer (It will be set to rudp.ack when send)
-        uint64_t ack{};           // ACK received by the peer
-        unsigned long recvTime{}; // ACK received time
-        // sent
-        uint64_t sentSequence{};  // Sent my sequence
-        uint64_t sentAck{};       // Sent ACK
-        unsigned long sentTime{}; // Sent ACK time
-    }__attribute__((__packed__));
+        struct Exchange
+        {
+            //
+            uint64_t sequence{};
+            uint64_t recvSeq{};
+            uint64_t recvAck{};
+            unsigned long recvTime{};
+            uint64_t sentSeq{};
+            uint64_t sentAck{};
+            // unsigned long sentTime{}
+            bool returnACK{};
+        } __attribute__((__packed__));
+        Exchange uni{};
+    } __attribute__((__packed__));
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using info_map_t = std::map<MACAddress, Info>;
+    using info_map_t = std::map<MACAddress, PeerInfo>;
 #else
-    using info_map_t = vmap<MACAddress, Info>;
+    using info_map_t = vmap<MACAddress, PeerInfo>;
 #endif
-    const info_map_t& peerInfo() const { return _peerInfo; }
+    //    const info_map_t& peerInfo() const { return _peerInfo; }
     
   private:
-    void _update(const unsigned long ms, Communicator::state_map_t& sentState,  const Communicator::config_t& cfg);
+    void _update(const unsigned long ms, const Communicator::config_t& cfg);
     void on_receive(const MACAddress& addr, const TransceiverHeader* th);
     void on_notify(const Notify notify, const void* arg);
     
   private:
     const uint8_t _tid{}; // Transceiver unique identifier
-    unsigned long _sentTime{}, _emptyAckSendInterval{5000};
-    uint64_t _sequence{}; // Send sequence
+    //    unsigned long _sentTime{}, _emptyAckSendInterval{5000};
     info_map_t _peerInfo; // peerr information for RUDP
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
