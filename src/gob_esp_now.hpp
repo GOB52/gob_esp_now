@@ -85,18 +85,13 @@ struct lock_guard
 */
 struct CommunicatorHeader
 {
-    static constexpr uint16_t SIGNETURE = 0x454e; //!< @brief Packet signeture
-
-    enum Type : uint8_t { AllPeer, };
-    
+    static constexpr uint16_t SIGNETURE = 0x5200; //!< @brief Packet signeture
     uint16_t signeture{SIGNETURE}; //!< @brief Signeture of the Communicator's data
     uint8_t  app_id{};             //!< @brief Application-specific ID
-    Type     type{};               //!< @brief type of packet
     uint8_t  count{};              //!< @brief Number of transceiver data
     uint8_t  size{sizeof(*this)};  //!< @brief Size of packet [ |CH|TH...|TH......|TH.| ]
     // Transceiver data continues for count times.
 }  __attribute__((__packed__));
-
 
 /*!
   @struct RUDP
@@ -114,7 +109,7 @@ struct RUDP
     static constexpr uint8_t _NUL = 0x08; // Heartbeat
     static constexpr uint8_t _CHK = 0x04; // Calculate checksum include payload?
     static constexpr uint8_t _TCS = 0x02; // Demand for resumption
-    //    static constexpr uint8_t _ALL = 0x01; // All peer?(gob_esp_now proprietary)
+    static constexpr uint8_t _ALL = 0x01; // All peer?(gob_esp_now proprietary)
     ///@endcond
     
     /*!
@@ -127,7 +122,7 @@ struct RUDP
          SYN     = _SYN,        //!< @brief Begin session
          SYN_ACK = _SYN | _ACK, //!< @brief Begin session with ACK
          ACK     = _ACK,        //!< @brief Acknowledge (with payload if exists)
-         //         ACK_ALL = _ACK | _ALL,
+         ACK_ALL = _ACK | _ALL, //!< @brief Acknowledge for all peers (with payload if exists)
          //ACK_CHK = _ACK | _CHK,
          //EAK     = _ACK | _EAK,
          RST     = _RST,        //!< @brief End session
@@ -165,8 +160,10 @@ struct TransceiverHeader
     inline bool isSYN_ACK() const    { return (rudp.flag == to_underlying(RUDP::Flag::SYN_ACK)); } //!< @brief is SYN?
     inline bool isRST() const        { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
     inline bool isACK() const        { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
+    inline bool isALL() const        { return (rudp.flag & RUDP::_ALL); } //!< @brief EEEE
     inline bool isNUL() const        { return (rudp.flag == to_underlying(RUDP::Flag::NUL)); } //!< @brief is NUL?
     inline bool hasPayload() const   { return size > sizeof(*this); } //!< @brief Has payload?
+    inline uint8_t payloadSize() const { return hasPayload() ? size - sizeof(*this) : 0; } //!< @brief payload size if exists
     ///@}
     inline uint8_t* payload() const  { return hasPayload() ? ((uint8_t*)this) + sizeof(*this) : nullptr; } //!< @brief Gets the payload pointer if exists.
 }  __attribute__((__packed__));
@@ -222,37 +219,21 @@ class Communicator
         //
         //        uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN}; //!< @brief The maximum number of octets that can be received by the peer
         //! @brief The timeout value for retransmission of unacknowledged packets
-        uint16_t retransmissionTimeout;
+        uint16_t retransmissionTimeout{DEFAULT_RETRANSMISSION_TIMEOUT};
         //! @brief The timeout value for sending an acknowledgment segment if another segment is not sent
-        uint16_t cumulativeAckTimeout;
+        uint16_t cumulativeAckTimeout{DEFAULT_CUMULATIVE_ACK_TIMEOUT};
         //! @brief The timeout value for sending a null segment if a data segment has not been sent
-        uint16_t nullSegmentTimeout;
+        uint16_t nullSegmentTimeout{DEFAULT_NULL_TIMEOUT};
         //! @brief This timeout value indicate the amount of time the state information will be  saved for a connection before an auto reset occurs.        
-        uint16_t transferStateTimeout;
+        uint16_t transferStateTimeout{DEFAULT_TRANSFER_STATE_TIMEOUT};
         //! @brief The maximum number of times consecutive retransmission(s)
-        uint8_t maxRetrans;
+        uint8_t maxRetrans{DEFAULT_MAX_RETRANS};
         //! @brief The maximum number of acknowledgments that will be accumulated before sending an acknowledgment
-        uint8_t maxCumAck;
+        uint8_t maxCumAck{DEFAULT_MAX_CUM_ACK};
         //! @brief he maximum number of out of sequence packets that will be accumulated before an EACK segment is sent
-        uint8_t maxOutOfSeq;
+        uint8_t maxOutOfSeq{DEFAULT_MAX_OUT_OF_SEQ};
         //! @brief The maximum number of consecutive auto reset that will performed before a connection is reset
-        uint8_t maxAutoReset;
-
-        static config_t defaultValue()
-        {
-            config_t cfg =
-            {
-                DEFAULT_RETRANSMISSION_TIMEOUT,
-                DEFAULT_CUMULATIVE_ACK_TIMEOUT,
-                DEFAULT_NULL_TIMEOUT,
-                DEFAULT_TRANSFER_STATE_TIMEOUT,
-                DEFAULT_MAX_RETRANS,
-                DEFAULT_MAX_CUM_ACK,
-                DEFAULT_MAX_OUT_OF_SEQ,
-                DEFAULT_MAX_AUTO_RESET
-            };
-            return cfg;
-        }
+        uint8_t maxAutoReset{DEFAULT_MAX_AUTO_RESET};
     }  __attribute__((__packed__));
 
     /*!
@@ -296,10 +277,11 @@ class Communicator
     ///@{
     inline const MACAddress& address() const  { return _addr; } //!< @brief Gets the self address
     inline unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
-    inline Role role() const        { return _role; }
-    inline bool isPrimary() const   { return _role == Role::Primary; }
-    inline bool isSecondary() const { return _role == Role::Secondary; }
-    inline bool isNoRole() const   { return _role == Role::NoRole; }
+    inline Role role() const        { return _role; } //!< @brief Gets the role type
+    inline bool isPrimary() const   { return _role == Role::Primary; } //!< @brief Is role primary?
+    inline bool isSecondary() const { return _role == Role::Secondary; } //<! @brief Is role secondary?
+    inline bool isNoRole() const   { return _role == Role::NoRole; } //!< @brief No role?
+    inline config_t config() const { return _config; } //!< @brief Gets the configuretion
     ///@}
 
     void setRole(const Role r) { _role = r; }
@@ -308,7 +290,13 @@ class Communicator
       @brief Begin communication
       @param app_id Unique value for each application
     */
-    bool begin(const uint8_t app_id, const config_t* cfg = nullptr);
+    inline bool begin(const uint8_t app_id) { return begin(app_id, config_t{}); }
+    /*!
+      @brief Begin communication
+      @param app_id Unique value for each application
+      @param cfg Configuretion
+    */
+    bool begin(const uint8_t app_id, const config_t& cfg);
     void end();
     /*!
       @brief Update comminicator
@@ -320,16 +308,16 @@ class Communicator
     ///@name Transceiver
     ///@{
     Transceiver* transceiver(const uint8_t tid); //!< @brief Gets the transceiver
-    bool registerTransceiver(Transceiver* t); //!< @brief Register
-    bool unregisterTransceiver(Transceiver* t); //!< @brief Unregister
+    bool registerTransceiver(Transceiver* t); //!< @brief Register the transceiver
+    bool unregisterTransceiver(Transceiver* t); //!< @brief Unregister the transceiver
     size_t numOfTransceivers() const { return _transceivers.size(); } //!< @brief Gets the number of registered transceivers
     ///@}
 
     ///@name Peer
     ///@warning Peer status is shared with ESP-NOW
     ///@{
-    bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register peer
-    void unregisterPeer(const MACAddress& addr); //!< @brief Unregister peer
+    bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register the peer
+    void unregisterPeer(const MACAddress& addr); //!< @brief Unregister the peer
 
     /*!
       @brief Clear all peer
@@ -349,7 +337,7 @@ class Communicator
      */
     bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
     //! @brief Post data with lock
-    bool post_with_lock(const uint8_t* peer_addr, const void* data, const uint8_t length)
+    bool postWithLock(const uint8_t* peer_addr, const void* data, const uint8_t length)
     {
         lock_guard _(_sem);
         return post(peer_addr, data, length);
@@ -362,7 +350,7 @@ class Communicator
      */
     bool send(const uint8_t* peer_addr, const void* data, const uint8_t length);
     //! @brief Send data with lock
-    bool send_with_lock(const uint8_t* peer_addr, const void* data, const uint8_t length)
+    bool sendWithLock(const uint8_t* peer_addr, const void* data, const uint8_t length)
     {
         lock_guard _(_sem);
         return send(peer_addr, data, length);
@@ -391,7 +379,8 @@ class Communicator
     ///@name Debugging features
     ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
     ///@{
-    virtual String debugInfo() const; //!< @brief Gets the information string
+    String debugInfo() const; //!< @brief Gets the information string with lock
+    virtual String debug_info() const; //!< @brief Gets the information string
     bool isEnableDebug() const     { return _debugEnable; } //!< @brief Are debugging features enabled?
     void enableDebug(const bool b) { _debugEnable = b;    } //!< @brief Enable/Disable debugging features
     ///@}
@@ -508,19 +497,22 @@ class Transceiver
     { 
         return std::all_of(_peerInfo.begin(), _peerInfo.end(), [&seq](decltype(_peerInfo)::const_reference a)
         {
-            return seq <= a.second.recv.ack || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
+            return seq <= a.second.ap.recvAck || !(a.first) || a.first.isMulticast(); // Null MAC and multicast are considered true
         });
     }
-    inline bool delivered(const uint8_t seq) { return delivered(restore_u64_earlier(_peerInfo[MACAddress()].sequence, seq)); }
-#endif
+    inline bool delivered(const uint8_t seq)
+    {
+        return delivered(restore_u64_earlier(_peerInfo[MACAddress()].ap.sequence, seq));
+    }
+    #endif
+    
     inline bool delivered(const uint64_t seq, const MACAddress& addr)
     {
-        //        return seq <= ((bool)addr ? _peerInfo[addr].recv.ack : _peerInfo[addr].recvA.ack);
-        return seq <= _peerInfo[addr].uni.recvAck;
+        return seq <= _peerInfo[addr].recvAck;
     }
     inline bool delivered(const uint8_t  seq, const MACAddress& addr)
     {
-        return delivered(restore_u64_earlier(_peerInfo[addr].uni.sequence, seq), addr);
+        return delivered(restore_u64_earlier(_peerInfo[addr].sequence, seq), addr);
     }
     
     //! @brief Reset sequence,ack...
@@ -653,29 +645,28 @@ class Transceiver
     void build_peer_map();
     // WARN:Locked in this >>
     bool post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, const void* data = nullptr, const uint8_t length = 0);
-    inline bool post_ack(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::ACK); }
-    inline bool post_ack(const MACAddress& addr)   { return post_ack((bool)addr ? addr.data() : nullptr); }
+    inline bool post_ack(const uint8_t* peer_addr,const bool forAll = false)
+    {
+        return post_rudp(peer_addr, forAll ? RUDP::Flag::ACK_ALL : RUDP::Flag::ACK);
+    }
+    inline bool post_ack(const MACAddress& addr, const bool forAll = false)   { return post_ack((bool)addr ? addr.data() : nullptr, forAll); }
     inline bool post_nul(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::NUL); }
     inline bool post_nul(const MACAddress& addr)   { return post_nul((bool)addr ? addr.data() : nullptr); }
     // <<
     
-    uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    void make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
     struct PeerInfo
     {
-        struct Exchange
-        {
-            //
-            uint64_t sequence{};
-            uint64_t recvSeq{};
-            uint64_t recvAck{};
-            unsigned long recvTime{};
-            uint64_t sentSeq{};
-            uint64_t sentAck{};
-            // unsigned long sentTime{}
-            bool returnACK{};
-        } __attribute__((__packed__));
-        Exchange uni{};
+        uint64_t sequence{};
+        uint64_t recvSeq{};
+        uint64_t recvAck{};
+        //        uint64_t ACKSequence, ACKRecvSeq,ACKRecvACK;
+        unsigned long recvTime{};
+        uint64_t sentSeq{};
+        uint64_t sentAck{};
+        // unsigned long sentTime{}
+        bool returnACK{};
     } __attribute__((__packed__));
 
 #if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
@@ -693,7 +684,7 @@ class Transceiver
   private:
     const uint8_t _tid{}; // Transceiver unique identifier
     //    unsigned long _sentTime{}, _emptyAckSendInterval{5000};
-    info_map_t _peerInfo; // peerr information for RUDP
+    info_map_t _peerInfo; // peer information for RUDP (unique)
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
     friend class Communicator;

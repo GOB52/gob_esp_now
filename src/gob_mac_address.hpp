@@ -62,6 +62,12 @@ class MACAddress
     ///@{
     explicit inline constexpr operator uint64_t() const noexcept { return _addr64; } //!< @brief Cast to uint64_t
     /*!
+      @brief Cast to const unit8_t*
+      @warning Return nullptr if null address
+      @note Use data() if you want to get the inner array
+     */
+    explicit inline constexpr operator const uint8_t*() const noexcept { return static_cast<bool>(*this) ? _addr : nullptr; }
+    /*!
       @brief Cast to bool
       @retval false Null address (all zero)
      */
