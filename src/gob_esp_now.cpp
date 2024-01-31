@@ -514,11 +514,11 @@ void Communicator::notify(const Notify n, const void* arg)
     {
     case Notify::Disconnect:
         LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
-        //unregisterPeer(*paddr);
+        unregisterPeer(*paddr);
         break;
     case Notify::ConnectionLost:
         LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
-        //unregisterPeer(*paddr);
+        unregisterPeer(*paddr);
         break;
     }
     if(_notifyFunction) { _notifyFunction(n, arg); }
