@@ -85,7 +85,7 @@ struct lock_guard
 */
 struct CommunicatorHeader
 {
-    static constexpr uint16_t SIGNETURE = 0x5200; //!< @brief Packet signeture
+    static constexpr uint16_t SIGNETURE = 0x5200; //!< @brief Packet signeture(8bit) + Header version(8bit)
     uint16_t signeture{SIGNETURE}; //!< @brief Signeture of the Communicator's data
     uint8_t  app_id{};             //!< @brief Application-specific ID
     uint8_t  count{};              //!< @brief Number of transceiver data
@@ -418,7 +418,7 @@ class Communicator
     bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
 
     void reset_sent_state(const MACAddress& addr);
-    
+
   private:
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
 
@@ -430,7 +430,8 @@ class Communicator
     MACAddress _addr{}; // Self address
     config_t _config{};
 
-    std::vector<Transceiver*> _transceivers;
+    Transceiver* _sysTransceiver{}; // System transceiver
+    std::vector<Transceiver*> _transceivers; // User transceiver
 
     unsigned long _lastSentTime{};
     MACAddress _lastSentAddr{BROADCAST};
@@ -438,6 +439,8 @@ class Communicator
     state_map_t _state;
 
     notify_function _notifyFunction{};
+
+    
     
 #if !defined(NDEBUG)
     bool _debugEnable{};
@@ -454,8 +457,9 @@ class Transceiver
 {
   public:
     /*!
-      @param tid Unique value for each transceiver
+      @param tid Unique value for each transceiver (Other than 0)
       @note id also serves as priority (in ascending order)
+      @warning tid other than 0
      */
     explicit Transceiver(const uint8_t tid);
     virtual ~Transceiver();
@@ -650,11 +654,12 @@ class Transceiver
 #endif
     
   private:
+    Transceiver(); // System transceiver for communicator
     void _update(const unsigned long ms, const Communicator::config_t& cfg);
     void on_receive(const MACAddress& addr, const TransceiverHeader* th);
     
   private:
-    const uint8_t _tid{};    // Transceiver unique identifier
+    const uint8_t _tid{};    // Transceiver unique identifier (0 reserved)
     info_map_t _peerInfo;    // peer information for RUDP (ACK with payload)
     
     mutable SemaphoreHandle_t _sem{}; // Binary semaphore
