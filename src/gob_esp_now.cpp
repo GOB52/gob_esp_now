@@ -149,8 +149,8 @@ bool remove_not_need_resend(std::vector<uint8_t>& packet)
     while(cnt--)
     {
         auto th = (TransceiverHeader*)p;
-        // Unreliable or (Not NUL and (Not ACK or No payload))
-        if(th->isUnreliable() || (!th->isNUL() && (!th->isACK() || !th->hasPayload())) )
+        // unreliable or only ACK with no payload
+        if(th->isUnreliable() || (th->onlyACK() && !th->hasPayload()) )
         {
             --ch->count;
             ch->size -= th->size;
@@ -616,7 +616,7 @@ void Communicator::unregisterPeer(const MACAddress& addr)
         {
             t->with_lock([&t, &addr]()
             {
-                t->_peerInfo.erase(addr);
+                t->clear(addr);
             });
         }
     }

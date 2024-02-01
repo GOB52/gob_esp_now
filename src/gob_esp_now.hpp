@@ -158,6 +158,7 @@ struct TransceiverHeader
     inline bool isSYN_ACK() const    { return (rudp.flag == to_underlying(RUDP::Flag::SYN_ACK)); } //!< @brief is SYN?
     inline bool isRST() const        { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
     inline bool isACK() const        { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
+    inline bool onlyACK() const      { return (rudp.flag == to_underlying(RUDP::Flag::ACK)); } //!< @brief only ACK?
     inline bool isNUL() const        { return (rudp.flag == to_underlying(RUDP::Flag::NUL)); } //!< @brief is NUL?
     inline bool hasPayload() const   { return size > sizeof(*this); } //!< @brief Has payload?
     inline uint8_t payloadSize() const { return hasPayload() ? size - sizeof(*this) : 0; } //!< @brief payload size if exists
