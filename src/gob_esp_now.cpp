@@ -114,6 +114,26 @@ void for_each_packet(const std::vector<uint8_t>& packet, Func func, Args&&... ar
     }
 }
 
+// Append queue data
+std::vector<uint8_t> append_queue(std::vector<uint8_t>& a, std::vector<uint8_t>& b)
+{
+    if(b.empty()) { return a; }
+    if(a.empty()) { return b; }
+
+    auto ch = (CommunicatorHeader*)a.data();
+    auto b_ch = (CommunicatorHeader*)b.data();
+    auto s = b.data() + sizeof(*b_ch);
+    auto ssz = b_ch->size - sizeof(*b_ch);
+    auto osz = a.size();
+
+    // TODO: check size!
+    a.resize(osz + ssz);
+    std::memcpy(a.data() + osz, s, ssz);
+    ch->count += b_ch->count;
+    ch->size = a.size();
+    return a;
+}
+
 #else
 inline const char* err2cstr(esp_err_t) { return ""; }
 inline const char* notify_to_cstr(const Notify notify) { return ""; }
@@ -149,8 +169,10 @@ bool remove_not_need_resend(std::vector<uint8_t>& packet)
     while(cnt--)
     {
         auto th = (TransceiverHeader*)p;
+        // unreliable or NUL or only ACK with no payload
+        //if(th->isUnreliable() || th->isNUL() || (th->onlyACK() && !th->hasPayload()) )
         // unreliable or only ACK with no payload
-        if(th->isUnreliable() || (th->onlyACK() && !th->hasPayload()) )
+        if(th->isUnreliable() ||  (th->onlyACK() && !th->hasPayload()) )
         {
             --ch->count;
             ch->size -= th->size;
@@ -182,8 +204,12 @@ Communicator& Communicator::instance()
 
 Communicator:: Communicator()
 {
-    _sem = xSemaphoreCreateBinary();
-    xSemaphoreGive(_sem);
+    _sem = xSemaphoreCreateRecursiveMutex();
+    assert(_sem);
+
+    _permitToSend = xQueueCreate(1, 0U);;
+    assert(_permitToSend);
+    
     _addr.get(ESP_MAC_WIFI_STA);
     _sysTransceiver = new Transceiver();
     assert(_sysTransceiver);
@@ -253,17 +279,22 @@ void Communicator::update()
     if(!_began) { return; }
 
     auto ms = millis();
-
+    unsigned long startTime{};
+    bool sent{};
+    {
     lock_guard _(_sem);
+
+    // Remove acked data
+    // If we don't do it here, the TRX update will make it easier to overflow the posted data.
+    for(auto& q : _queue) { remove_acked(q.first, q.second); }
 
     // Update transceivers
     for(auto& t : _transceivers)
     {
         t->_update(ms, _config);
         t->update(ms);
-    } 
-
-    if(!_canSend || numOfPeer() == 0) { return; }
+    }
+    //    if(!_canSend || numOfPeer() == 0) { return; }
 
     // Detect communication failure
     for(auto& ss : _state)
@@ -276,66 +307,65 @@ void Communicator::update()
         }
     }
     
-    // Send if exists queue (Order by MACAddresss ASC, Null MACAddress(means send to all registered peer is top)
+    // Send if exists queue (Order by MACAddresss ASC)
     // first : MACAddress
     // second : packet
     for(auto& q : _queue)
     {
-        // Remove acked data
-        if(!remove_acked(q.first, q.second)) { /*_state[q.first].reset();*/  continue; }
-        // Transmission is not possible before receiving the transmission callback
-        if(!_canSend){ continue; }
+        //        if(!_canSend || q.second.empty() || !_state.count(q.first)) { continue; }
+        if(q.second.empty() || !_state.count(q.first)) { continue; }
 
-        // LIB_LOGD("  >[%s] st:%d", q.first.toString().c_str(), _state[q.first].state);
         // Send / resend
         if(_state[q.first].state == State::None ||
-           (_state[q.first].state != State::None &&
+           (/*_state[q.first].state != State::None &&*/
             ms > _state[q.first].sentTime + _config.retransmissionTimeout))
         {
             LIB_LOGD("---- %s:%u:[%s]",
                      _state[q.first].state == State::None ? "Send" : "Resend",
                      _state[q.first].retry,q.first.toString().c_str());
 
-            send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second); // Set _canSend to false if sent
+            startTime = micros();
 
+            sent = send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second); // Set _canSend to false if sent
             if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
             else { ++_state[q.first].retry; }
-
-            #if 0
-            // to all peer?
-            if(!q.first)
-            {
-                for(auto& ss : _state)
-                {
-                    // TODO: 単純代入で良いのか? StateもAll版必要?
-                    if(ss.second.state == State::Failed) { ss.second.retry = _state[q.first].retry; }
-                };
-            }
-            #endif
+            break;
         }
     }
-
-    // Detect communication failures and heartbeat
-    if(_transceivers.size() > 1 && _canSend)
+    }
+    // Wait onSent
+    if(sent)
     {
-        for(auto& ss : _state)
+        xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
+        auto oneTime = micros() - startTime;
+        _time += oneTime;
+        _minTime = std::min(oneTime, _minTime);
+        _maxTime = std::max(oneTime, _minTime);
+    }
+
+    lock_guard _(_sem);
+    // Detect communication failures and heartbeat
+    //    if(!_canSend || _transceivers.size() < 2 || !_config.nullSegmentTimeout) { return; }
+    if(_transceivers.size() < 2 || !_config.nullSegmentTimeout) { return; }
+
+    for(auto& ss : _state)
+    {
+        if(!ss.first) { continue; }
+        // Send a NUL if I am the client when a null timeout occurs
+        if(isSecondary()
+           && (_queue.count(ss.first) && _queue.at(ss.first).empty())
+           && ms > ss.second.sentTime + _config.nullSegmentTimeout)
         {
-            if(!ss.first) { continue; }
-            
-            // Ssend a NUL if I am the client when a null timeout occurs
-            if(isSecondary() && (_queue.count(ss.first) && _queue.at(ss.first).empty()) && ms > ss.second.sentTime + _config.nullSegmentTimeout)
-            {
-                LIB_LOGD("[NUL]");
-                _sysTransceiver->post_nul(ss.first);
-            }
-            // Detect communication failures
-            // If I have not received for double the time of the NUL timeout
-            if(isPrimary() && ss.second.sentTime < ss.second.recvTime &&
-               ms > ss.second.recvTime + _config.nullSegmentTimeout * 2)
-            {
-                LIB_LOGE("<NUL never come>");
-                notify(Notify::ConnectionLost, &ss.first);
-            }
+            LIB_LOGD("[NUL]");
+            _sysTransceiver->post_nul(ss.first);
+        }
+        // If I have not received for double the time of the NUL timeout
+        if(isPrimary()
+           && ss.second.sentTime < ss.second.recvTime
+           && ms > ss.second.recvTime + _config.nullSegmentTimeout * 2)
+        {
+            LIB_LOGE("<NUL never come>");
+            notify(Notify::ConnectionLost, &ss.first);
         }
     }
 }
@@ -377,6 +407,7 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     return true;
 }
 
+#if 0
 // Send directly
 bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
@@ -402,6 +433,7 @@ bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_
     reset_sent_state(MACAddress(peer_addr));
     return send_esp_now(peer_addr, v);
 }
+#endif
 
 // Call with communicator locked.
 bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& packet)
@@ -409,10 +441,11 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     MACAddress addr(peer_addr);
     if(((bool)addr && !existsPeer(addr)) || packet.empty() || ((CommunicatorHeader*)packet.data())->count == 0)
     {
-        LIB_LOGW("No peer or empty packet");
+        LIB_LOGW("No peer or empty packet %s", addr.c_str());
         return false;
     }
-    
+
+#if 0    
 #if !defined(NDEBUG)
     if(isEnableDebug() && randf() < _debugSendLoss)
     {
@@ -422,9 +455,10 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
         return false;
     }
 #endif
-
+#endif
+    
     auto ret = esp_now_send(peer_addr, packet.data(), packet.size());
-    remove_not_need_resend(packet);
+    //    remove_not_need_resend(packet);
     if(ret != ESP_OK)
     {
         LIB_LOGE("Failed to esp_now_send %s %d:%s", MACAddress(peer_addr).toString().c_str(), ret, err2cstr(ret));
@@ -432,7 +466,9 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     }
     _lastSentTime = millis();
     _lastSentAddr = addr;
-    _canSend = false;
+    _lastSentQueue = packet;
+    packet.clear();
+    //    _canSend = false;
 
     return true;
 }
@@ -461,14 +497,6 @@ bool Communicator::remove_acked(const MACAddress& addr, std::vector<uint8_t>& pa
 
         if(th->isACK())
         {
-#if 0
-            LIB_LOGD("  >S:%u => (%llu)%llu ack:%llu",
-                     th->rudp.sequence,
-                     t->_sequence,
-                     restore_u64_earlier(t->_sequence, th->rudp.sequence),
-                     t->_peerInfo[addr].ack);
-#endif
-
             bool acked = t->with_lock([&t,&th,&addr]()
             {
                 return (th->hasPayload() || th->isNUL()) && t->delivered(th->rudp.sequence, addr);
@@ -487,8 +515,10 @@ bool Communicator::remove_acked(const MACAddress& addr, std::vector<uint8_t>& pa
         }
         p += th->size;
     }
-    if(ch->count != oldCount) { LIB_LOGD("[%s] CH:%u -> %u",
-                                         addr.toString().c_str(), oldCount, ch->count); }
+    if(ch->count != oldCount)
+    {
+        LIB_LOGD("[%s] CH:%u -> %u", addr.toString().c_str(), oldCount, ch->count);
+    }
     if(ch->count == 0) { packet.clear(); }
 
     //LIB_LOGD(" => packet:[%s]", packet_to_str(packet).c_str());
@@ -664,14 +694,27 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
 
     bool succeed{status == ESP_NOW_SEND_SUCCESS};
 
+    if(!succeed) { LIB_LOGE("SFAILED"); }
     LIB_LOGD("%s [%s]", succeed ? "SEND_SUCCESS" : "SEND_FAILED",
              addr.toString().c_str());
+
+
+    // Composite the remaining elements and those added to the queue between esp_send and the callback
+    if(succeed)
+    {
+        remove_not_need_resend(_lastSentQueue);
+    }
+    auto sz = _lastSentQueue.size();
+    auto b = !_queue[addr].empty();
+    _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
+    if(b) { LIB_LOGE("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
 
     if(_state.count(addr))
     {
         _state[addr].state = (State::Status)((uint8_t)State::Status::Succeed + (succeed ? 0 : 1));
         _state[addr].sentTime = millis();
-    
+
+#if 0        
         // All peers?
         if(!_lastSentAddr)
         {
@@ -679,13 +722,18 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
             if(_state[addr].state > ss.state ) { ss.state = _state[addr].state; }
             ss.sentTime = _state[addr].sentTime;
         }
+#endif
     }
+#if 0
     // When sending to all peers, until all callbacks are called
     _canSend = (bool)_lastSentAddr ? true : std::all_of(_state.begin(), _state.end(),
                                                [](decltype(_state)::const_reference ss)
                                                {
                                                    return !ss.first || ss.second.state != State::Status::None;
                                                });
+#endif
+    //    _canSend = true;
+    xQueueSend(_permitToSend, nullptr, 0);
 }
 
 void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* data, int length)
@@ -704,7 +752,18 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     if(ch->signeture != CommunicatorHeader::SIGNETURE
        || ch->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
 
+#if 0
+#if !defined(NDEBUG)
+    if(isEnableDebug() && randf() < _debugRecvLoss)
+    {
+        LIB_LOGD("[DF]:FailedR tid:%u", t->identifier());
+        return;
+    }
+#endif
+#endif
     LIB_LOGD("---- RECV:[%s]", addr.toString().c_str());
+
+    lock_guard _(_sem);
     
     auto ms = millis();
     _state[MACAddress()].recvTime = _state[addr].recvTime = ms;
@@ -714,26 +773,14 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     while(cnt--)
     {
         auto th = (const TransceiverHeader*)data;
-
-        lock_guard _(_sem);
-
         for(auto& t : _transceivers)
         {
             if(t->identifier() == th->tid)
             {
-#if !defined(NDEBUG)
-                if(isEnableDebug() && randf() < _debugRecvLoss)
-                {
-                    LIB_LOGD("[DF]:FailedR tid:%u", t->identifier());
-                    continue;
-                }
-#endif
-                //LIB_LOGD("(%u)[%s]", th->tid, addr.toString().c_str());
                 // Old or future incoming data is not processed if RUDP ACK
                 auto correct = !th->isACK() ||
                         t->with_lock([&t, &ch, &th, &addr]()
                         {
-                            //LIB_LOGD("%llu:%u => %llu", t->_peerInfo[addr].sequence, th->rudp.sequence, restore_u64_later(t->_peerInfo[addr].sequence, th->rudp.sequence));
                             auto rseq = (th->hasPayload() || th->isNUL()) ?
                                     t->_peerInfo[addr].recvSeq : t->_peerInfo[addr].recvAckSeq;
 
@@ -749,11 +796,13 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                 }
                 else
                 {
-                    LIB_LOGW("[Rejected[%u] P:%d] %u/%llu",
+                    auto rs = (th->hasPayload() || th->isNUL()) ?
+                            t->_peerInfo[addr].recvSeq : t->_peerInfo[addr].recvAckSeq;
+                    LIB_LOGW("[Rejected[%u] P:%d %u/%llu(%llu)",
                              t->_tid,
                              th->hasPayload(),
-                             th->rudp.sequence,
-                             (th->hasPayload() || th->isNUL()) ? t->_peerInfo[addr].recvSeq : t->_peerInfo[addr].recvAckSeq);
+                             th->rudp.sequence, rs, rs % 256);
+                             
 
                 }
                 break;
@@ -783,7 +832,7 @@ String Communicator::debug_info() const
                       _config.maxCumAck,
                       _config.maxOutOfSeq,
                       _config.maxAutoReset);
-                      
+    
     for(auto& t : _transceivers)
     {
         s += t->debugInfo() + '\n';
@@ -820,6 +869,8 @@ String Communicator::debug_info() const
                           st.first.toString().c_str(),
                           st.second.state, st.second.retry, st.second.sentTime, st.second.recvTime);
     }
+
+    s += formatString("minTime:%lu maxTime:%lu\n", _minTime, _maxTime);
     s.trim();
     return s;
 }
@@ -829,16 +880,14 @@ String Communicator::debug_info() const
 // class Transceiver
 Transceiver::Transceiver()
 {
-    _sem = xSemaphoreCreateBinary();
+    _sem = xSemaphoreCreateRecursiveMutex();
     assert(_sem);
-    xSemaphoreGive(_sem);
 }
 
 Transceiver::Transceiver(const uint8_t tid) : _tid(tid)
 {
-    _sem = xSemaphoreCreateBinary();
+    _sem = xSemaphoreCreateRecursiveMutex();
     assert(_sem);
-    xSemaphoreGive(_sem);
 }
 
 Transceiver::~Transceiver()
@@ -902,6 +951,7 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
     return rseq;
 }
 
+#if 0
 uint64_t Transceiver::sendReliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     if(!peer_addr || (peer_addr && !esp_now_is_peer_exist(peer_addr))) { return 0; }
@@ -910,7 +960,8 @@ uint64_t Transceiver::sendReliable(const uint8_t* peer_addr, const void* data, c
     auto seq = make_data(buf, RUDP::Flag::ACK, peer_addr, data, length);
     return Communicator::instance().sendWithLock(peer_addr, buf, sizeof(buf)) ? seq : 0;
 }
-                   
+#endif
+
 bool Transceiver::postUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { return false; }
@@ -919,6 +970,7 @@ bool Transceiver::postUnreliable(const uint8_t* peer_addr, const void* data, con
     return Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf));
 }
 
+#if 0
 bool Transceiver::sendUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { return false; }
@@ -926,6 +978,7 @@ bool Transceiver::sendUnreliable(const uint8_t* peer_addr, const void* data, con
     make_data(buf, RUDP::Flag::NONE, peer_addr, data, length);
     return Communicator::instance().sendWithLock(peer_addr, buf, sizeof(buf));
 }
+#endif
 
 void Transceiver::build_peer_map()
 {
@@ -980,6 +1033,7 @@ uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
         {
             // TODO: ここで ++pi.sequnce して post で overflow するとやばい気がする
             // post error の場合 sequence とばないか?
+            // そのばあいそもそも破綻するのだからいいのでは説
             seq = length ? ++pi.sequence : ++pi.ackSequence;
             th->rudp.sequence = seq & 0xFF;
             pi.sentAck = pi.recvSeq;
@@ -1001,29 +1055,27 @@ void Transceiver::_update(const unsigned long ms, const Communicator::config_t& 
     // Force send ACK?
     std::set<MACAddress> addrs;
 
-    // unicast
-    with_lock([this, &addrs, &ms, &cfg]()
-    {
-        for(auto& pi : _peerInfo)
-        {
-            if(!pi.first || !esp_now_is_peer_exist(pi.first.data()) || !pi.second.needReturnACK) { continue; }
+    lock_guard _(_sem);
 
-            // Send ACK if nothing is sent for a certain period of time after receiving ACK with payload
-            auto rtm = pi.second.recvTime;
-            if(rtm && ms > rtm + cfg.cumulativeAckTimeout)
-            {
-                LIB_LOGD(">> ForceACK:Timeout");
-                addrs.insert(pi.first);
-                continue;
-            }
-            // Post ACK if the number of unrespond ACKs exceeds a certain number
-            if(pi.second.recvSeq > pi.second.sentAck + cfg.maxCumAck)
-            {
-                LIB_LOGD(">> FoeceACK:Cum");
-                addrs.insert(pi.first);
-            }
+    for(auto& pi : _peerInfo)
+    {
+        if(!pi.first || !esp_now_is_peer_exist(pi.first.data()) || !pi.second.needReturnACK) { continue; }
+
+        // Send ACK if nothing is sent for a certain period of time after receiving ACK with payload
+        auto rtm = pi.second.recvTime;
+        if(rtm && ms > rtm + cfg.cumulativeAckTimeout)
+        {
+            LIB_LOGD(">> ForceACK:Timeout");
+            addrs.insert(pi.first);
+            continue;
         }
-    });
+        // Post ACK if the number of unrespond ACKs exceeds a certain number
+        if(pi.second.recvSeq > pi.second.sentAck + cfg.maxCumAck)
+        {
+            LIB_LOGD(">> FoeceACK:Cum");
+            addrs.insert(pi.first);
+        }
+    }
     for(auto& addr : addrs) { post_ack(addr.data()); }
 }
 
@@ -1035,18 +1087,23 @@ void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th
         lock_guard _(_sem);
         pi.recvTime = millis();
     }
-    rs = restore_u64_later(pi.recvSeq, th->rudp.sequence);
+
+    auto base = (th->hasPayload() || th->isNUL()) ? pi.recvSeq : pi.recvAckSeq;
+    rs = restore_u64_later(base, th->rudp.sequence);
     ra = restore_u64_later(pi.recvAck, th->rudp.ack);
-    LIB_LOGD("[RECV]:%u 0x%02x S:%u A:%u P:%u -> RS;%llu RA:%llu",
-             th->tid, th->rudp.flag, th->rudp.sequence, th->rudp.ack, th->payloadSize(), rs, ra);
+
+    LIB_LOGD("[RECV]:%u 0x%02x S:%u A:%u P:%u -> S:%llu => %llu A:%llu => %llu",
+             th->tid, th->rudp.flag, th->rudp.sequence, th->rudp.ack, th->payloadSize(),
+             base, rs, pi.recvAck, ra);
     
+    // isACK include NUL
     if(th->isACK())
     {
         lock_guard _(_sem);
         LIB_LOGD("<%s>:%u", th->isNUL() ? "NUL" : "ACK", th->payloadSize());
         ((th->hasPayload() || th->isNUL()) ?  pi.recvSeq : pi.recvAckSeq) = rs;
         if(ra > pi.recvAck) { pi.recvAck = ra; }
-        pi.needReturnACK |= (th->hasPayload() || th->isNUL()); // isNUL() == ACK | NUL
+        pi.needReturnACK |= (th->hasPayload() || th->isNUL());
     }
     if(th->isRST())
     {
@@ -1082,3 +1139,4 @@ String Transceiver::debugInfo() const
 #endif
 //
 }}
+

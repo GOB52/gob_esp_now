@@ -64,12 +64,12 @@ inline uint64_t restore_u64_later(const uint64_t u64, const uint8_t u8)
 
 /*!
   @struct lock_guard
-  @brief Scoped semaphore locking
+  @brief Lock in scope
  */
 struct lock_guard
 {
-    explicit lock_guard (SemaphoreHandle_t& s) : _sem(&s) { xSemaphoreTake(*_sem, portMAX_DELAY); }
-    ~lock_guard()                                         { xSemaphoreGive(*_sem); }
+    explicit lock_guard (SemaphoreHandle_t& s) : _sem(&s) { xSemaphoreTakeRecursive(*_sem, portMAX_DELAY); }
+    ~lock_guard()                                         { xSemaphoreGiveRecursive(*_sem); }
     lock_guard() = delete;
     lock_guard(const lock_guard&) = delete;
     lock_guard(lock_guard&&) = delete;
@@ -241,30 +241,11 @@ class Communicator
      */
     enum class Role : uint8_t
     {
-        NoRole,    //!< @brief No role
+        None,      //!< @brief No role
         Primary,   //!< @brief Primary. Also known as master, controller(ESP-NOW Terminology)
         Secondary, //!< @brief Secondary. Also known as slave
     };
-    
-    struct State
-    {
-        enum Status : uint8_t { None, Succeed, Failed };
-        Status state{}; // status
-        uint8_t retry{}; // retry counter
-        unsigned long sentTime{}; // sent time
-        unsigned long recvTime{}; // recv time
-        inline void reset() { state = None; }
 
-    } __attribute__((__packed__));
-
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using queue_map_t = std::map<MACAddress /* Target (NullAddress is all peers) */, std::vector<uint8_t>>;
-    using state_map_t = std::map<MACAddress, State>;
-#else
-    using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
-    using state_map_t = vmap<MACAddress, State>;
-#endif
-    
     static Communicator& instance();
     
     ///@cond 0
@@ -279,10 +260,11 @@ class Communicator
     inline Role role() const        { return _role; } //!< @brief Gets the role type
     inline bool isPrimary() const   { return _role == Role::Primary; } //!< @brief Is role primary?
     inline bool isSecondary() const { return _role == Role::Secondary; } //<! @brief Is role secondary?
-    inline bool isNoRole() const   { return _role == Role::NoRole; } //!< @brief No role?
+    inline bool isNoRole() const   { return _role == Role::None; } //!< @brief No role?
     inline config_t config() const { return _config; } //!< @brief Gets the configuretion
     ///@}
 
+    //! @brief Set role
     void setRole(const Role r) { _role = r; }
     
     /*!
@@ -326,7 +308,7 @@ class Communicator
     uint8_t numOfPeer(); //!< @brief Number of registered peers
     bool existsPeer(const MACAddress& addr); //!< @brief Exists peer?
     ///@}
-
+    
     /*!
       @brief Post data
       @param peer_addr MAC address (send all unicast peer if nullptr)
@@ -341,6 +323,7 @@ class Communicator
         lock_guard _(_sem);
         return post(peer_addr, data, length);
     }
+#if 0
     /*!
       @brief Send transceiver data
       @param peer_addr MAC address (send all unicast peer if nullptr)
@@ -354,7 +337,7 @@ class Communicator
         lock_guard _(_sem);
         return send(peer_addr, data, length);
     }
-
+#endif
     /*!
       @brief Call any function with lock
       @param Func Any functor
@@ -370,10 +353,10 @@ class Communicator
 
     /// @name Notification
     /// @{
-    //! @brief Register function
-    inline void registerNotifyFunction(notify_function f) { lock_guard _(_sem); _notifyFunction = f; }
-    //! @brief Unregister fucntion
-    inline void unregisterNotifyFunction() { lock_guard _(_sem); _notifyFunction = nullptr; }
+    //! @brief Register callback on otify
+    inline void registerNotifyCallback(notify_function f) { lock_guard _(_sem); _notifyFunction = f; }
+    //! @brief Unregister callback
+    inline void unregisterNotifyCallback() { lock_guard _(_sem); _notifyFunction = nullptr; }
     /*!
       @brief Notification
       @note Call your notify function if registered
@@ -402,6 +385,25 @@ class Communicator
 #endif
     
   protected:
+    struct State
+    {
+        enum Status : uint8_t { None, Succeed, Failed };
+        Status state{}; // status
+        uint8_t retry{}; // retry counter
+        unsigned long sentTime{}; // sent time
+        unsigned long recvTime{}; // recv time
+        inline void reset() { state = None; }
+
+    } __attribute__((__packed__));
+
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
+    using state_map_t = std::map<MACAddress, State>;
+#else
+    using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
+    using state_map_t = vmap<MACAddress, State>;
+#endif
+
     Communicator();
     
     ///@name Callback
@@ -417,31 +419,35 @@ class Communicator
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
     //    void append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>& packet);    
     bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
-
     void reset_sent_state(const MACAddress& addr);
 
   private:
-    mutable SemaphoreHandle_t _sem{}; // Binary semaphore
-
+    mutable SemaphoreHandle_t _sem{};
+    QueueHandle_t _permitToSend{};
+    
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     volatile bool _canSend{true};
-    Role _role{Role::NoRole};
+    Role _role{Role::None};
 
     MACAddress _addr{}; // Self address
     config_t _config{};
 
     Transceiver* _sysTransceiver{}; // System transceiver
-    std::vector<Transceiver*> _transceivers; // User transceiver
+    std::vector<Transceiver*> _transceivers; // User transceivers
 
     unsigned long _lastSentTime{};
-    MACAddress _lastSentAddr{BROADCAST};
+    MACAddress _lastSentAddr{};
+    std::vector<uint8_t> _lastSentQueue{};
     queue_map_t _queue;
+
     state_map_t _state;
 
     notify_function _notifyFunction{};
 
-    
+    unsigned long _time{};
+    unsigned long _minTime{99999999};
+    unsigned long _maxTime{};
     
 #if !defined(NDEBUG)
     bool _debugEnable{};
@@ -513,6 +519,7 @@ class Transceiver
     //! @brief Post to all peer
     template<typename T> inline uint64_t postReliable(                        const T& data) { return postReliable(nullptr,     &data ,sizeof(data)); }
 
+#if 0    
     /*!
       @brief Send data
       @param peer_addr Destination address. Post to all peer if nullptr
@@ -532,8 +539,9 @@ class Transceiver
     template<typename T> inline uint64_t sendReliable(const MACAddress& addr, const T& data) { return sendReliable(addr.data(), &data ,sizeof(data)); }
     //! @brief Send to all peer
     template<typename T> inline uint64_t sendReliable(                        const T& data) { return sendReliable(nullptr,     &data ,sizeof(data)); }
+#endif
     ///@}
-
+    
     ///@name Data transmission (Unreliable)
     ///@note Parameters are the same as post/sendReliable
     ///@{
@@ -543,8 +551,10 @@ class Transceiver
     template<typename T> inline bool postUnreliable(                        const T& data) { return postUnreliable(nullptr,     &data ,sizeof(data)); }
     bool sendUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length);
     inline bool sendUnreliable(                   const void* data, const uint8_t length)  { return sendUnreliable(nullptr, data, length); }
+#if 0
     template<typename T> inline bool sendUnreliable(const MACAddress& addr, const T& data) { return sendUnreliable(addr.data(), &data ,sizeof(data)); }
     template<typename T> inline bool sendUnreliable(                        const T& data) { return sendUnreliable(nullptr,     &data ,sizeof(data)); }
+#endif
     ///@}    
    
     /*!
@@ -615,8 +625,6 @@ class Transceiver
       @warning <em><strong>So, do not do lengthy operations in the callback function.</strong></em>
     */
     virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) {}
-    //! @brief Notification callback
-    virtual void onNotify(const Notify notify, const void* arg) {}
     
     void build_peer_map();
     // WARN:Locked in this >>
@@ -663,7 +671,7 @@ class Transceiver
     const uint8_t _tid{};    // Transceiver unique identifier (0 reserved)
     info_map_t _peerInfo;    // peer information for RUDP (ACK with payload)
     
-    mutable SemaphoreHandle_t _sem{}; // Binary semaphore
+    mutable SemaphoreHandle_t _sem{};
     friend class Communicator;
 };
 //
