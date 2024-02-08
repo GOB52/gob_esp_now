@@ -281,57 +281,60 @@ void Communicator::update()
     auto ms = millis();
     unsigned long startTime{};
     bool sent{};
-    {
-    lock_guard _(_sem);
 
-    // Remove acked data
-    // If we don't do it here, the TRX update will make it easier to overflow the posted data.
-    for(auto& q : _queue) { remove_acked(q.first, q.second); }
-
-    // Update transceivers
-    for(auto& t : _transceivers)
     {
-        t->_update(ms, _config);
-        t->update(ms);
-    }
-    //    if(!_canSend || numOfPeer() == 0) { return; }
+        lock_guard _(_sem);
 
-    // Detect communication failure
-    for(auto& ss : _state)
-    {
-        if(!ss.first) { continue; }
-        if(ss.second.retry > _config.maxRetrans)
+        // Remove acked data
+        // If we don't do it here, the TRX update will make it easier to overflow the posted data.
+        for(auto& q : _queue) { remove_acked(q.first, q.second); }
+
+        // Update transceivers
+        for(auto& t : _transceivers)
         {
-            LIB_LOGD("<Exceeded retry count>");
-            notify(Notify::ConnectionLost, &ss.first);
+            t->_update(ms, _config);
+            t->update(ms);
         }
-    }
+        //    if(!_canSend || numOfPeer() == 0) { return; }
+
+        // Detect communication failure
+        for(auto& ss : _state)
+        {
+            if(!ss.first) { continue; }
+            if(ss.second.retry > _config.maxRetrans)
+            {
+                LIB_LOGD("<Exceeded retry count>");
+                notify(Notify::ConnectionLost, &ss.first);
+            }
+        }
     
-    // Send if exists queue (Order by MACAddresss ASC)
-    // first : MACAddress
-    // second : packet
-    for(auto& q : _queue)
-    {
-        //        if(!_canSend || q.second.empty() || !_state.count(q.first)) { continue; }
-        if(q.second.empty() || !_state.count(q.first)) { continue; }
-
-        // Send / resend
-        if(_state[q.first].state == State::None ||
-           (/*_state[q.first].state != State::None &&*/
-            ms > _state[q.first].sentTime + _config.retransmissionTimeout))
+        // Send if exists queue (Order by MACAddresss ASC)
+        // first : MACAddress
+        // second : packet
+        for(auto& q : _queue)
         {
-            LIB_LOGD("---- %s:%u:[%s]",
-                     _state[q.first].state == State::None ? "Send" : "Resend",
-                     _state[q.first].retry,q.first.toString().c_str());
+            //        if(!_canSend || q.second.empty() || !_state.count(q.first)) { continue; }
+            if(q.second.empty() || !_state.count(q.first)) { continue; }
 
-            startTime = micros();
+            // Send / resend
+            if(_state[q.first].state == State::None ||
+               (/*_state[q.first].state != State::None &&*/
+                   ms > _state[q.first].sentTime + _config.retransmissionTimeout))
+            {
+                if(_state[q.first].state != State::None) { LIB_LOGE("resend: %d", ms > _state[q.first].sentTime + _config.retransmissionTimeout); }
 
-            sent = send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second); // Set _canSend to false if sent
-            if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
-            else { ++_state[q.first].retry; }
-            break;
+                LIB_LOGD("---- %s:%u:[%s]",
+                         _state[q.first].state == State::None ? "Send" : "Resend",
+                         _state[q.first].retry,q.first.toString().c_str());
+
+                startTime = micros();
+                sent = send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second);
+                if(!sent) { continue; }
+                if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
+                else { ++_state[q.first].retry; }
+                break;
+            }
         }
-    }
     }
     // Wait onSent
     if(sent)
@@ -340,7 +343,7 @@ void Communicator::update()
         auto oneTime = micros() - startTime;
         _time += oneTime;
         _minTime = std::min(oneTime, _minTime);
-        _maxTime = std::max(oneTime, _minTime);
+        _maxTime = std::max(oneTime, _maxTime);
     }
 
     lock_guard _(_sem);
@@ -690,15 +693,11 @@ void Communicator::callback_onSent(const uint8_t *peer_addr, esp_now_send_status
 
 void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t status)
 {
-    lock_guard _(_sem);
-
     bool succeed{status == ESP_NOW_SEND_SUCCESS};
+    if(!succeed) { LIB_LOGW("FAILED"); }
 
-    if(!succeed) { LIB_LOGE("SFAILED"); }
-    LIB_LOGD("%s [%s]", succeed ? "SEND_SUCCESS" : "SEND_FAILED",
-             addr.toString().c_str());
-
-
+    lock_guard _(_sem);
+    {
     // Composite the remaining elements and those added to the queue between esp_send and the callback
     if(succeed)
     {
@@ -713,25 +712,8 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     {
         _state[addr].state = (State::Status)((uint8_t)State::Status::Succeed + (succeed ? 0 : 1));
         _state[addr].sentTime = millis();
-
-#if 0        
-        // All peers?
-        if(!_lastSentAddr)
-        {
-            auto& ss = _state[_lastSentAddr];
-            if(_state[addr].state > ss.state ) { ss.state = _state[addr].state; }
-            ss.sentTime = _state[addr].sentTime;
-        }
-#endif
     }
-#if 0
-    // When sending to all peers, until all callbacks are called
-    _canSend = (bool)_lastSentAddr ? true : std::all_of(_state.begin(), _state.end(),
-                                               [](decltype(_state)::const_reference ss)
-                                               {
-                                                   return !ss.first || ss.second.state != State::Status::None;
-                                               });
-#endif
+    }
     //    _canSend = true;
     xQueueSend(_permitToSend, nullptr, 0);
 }
@@ -766,7 +748,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     lock_guard _(_sem);
     
     auto ms = millis();
-    _state[MACAddress()].recvTime = _state[addr].recvTime = ms;
+    _state[addr].recvTime = ms;
 
     auto cnt = ch->count;
     data += sizeof(CommunicatorHeader);
@@ -792,7 +774,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                 if(correct)
                 {
                     t->on_receive(addr, th);
-                    if(th->hasPayload()) { t->onReceive(addr, th->payload(), th->size - sizeof(TransceiverHeader)); }
+                    if(th->hasPayload()) { t->onReceive(addr, th->payload(), th->payloadSize()); }
                 }
                 else
                 {
@@ -802,8 +784,6 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                              t->_tid,
                              th->hasPayload(),
                              th->rudp.sequence, rs, rs % 256);
-                             
-
                 }
                 break;
             }
@@ -1109,7 +1089,7 @@ void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th
     {
         LIB_LOGD("<RST>");
         auto& comm = Communicator::instance();
-        comm.with_lock([&comm, &addr]() { comm.notify(Notify::Disconnect, &addr); });
+        comm.notify(Notify::Disconnect, &addr);
     }
     if(th->isNUL())
     {

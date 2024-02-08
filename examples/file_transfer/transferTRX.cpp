@@ -8,31 +8,38 @@ extern SdFs sd; // file_transfer_main.cpp
 
 using goblib::esp_now::MACAddress;
 
-namespace
+uint32_t calculateCRC32(const char* path)
 {
-uint16_t calculateCRC16(const char*path)
-{
-    FastCRC16 crc;
-    uint16_t val{};
+    FastCRC32 crc;
+    uint32_t val{};
+    bool first{true};
 
-    M5_LOGE("start crc");
     File f = sd.open(path);
-    if(!f) { return 0; }
-    
-    uint8_t buf[1024*4];
+    if(!f) { M5_LOGE("Failed to open [%s]\n", path); return 0; }
+
+    auto hsz = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    uint8_t* buf = new uint8_t[hsz];
+    if(!buf || !hsz) { return 0; }
+
     while(f.available())
     {
-        auto sz = std::min((int)sizeof(buf), f.available());
-        if(f.read(buf, sz) != sz) { return 0; }
-        val = crc.ccitt_upd(buf, sz);
+        auto sz = std::min((int)hsz, f.available());
+        if(f.read(buf, sz) != sz)
+        {
+            delete[] buf;
+            return 0;
+        }
+        val = first ? crc.crc32(buf, sz) : crc.crc32_upd(buf, sz); // 802.3
+        //val = first ? crc.cksum(buf, sz) : crc.cksum_upd(buf, sz); // POSIX
+        first = false;
     }
-    M5_LOGE("end crc");
     f.close();
+
+    delete[] buf;
     return val;
 }
-//
-}
 
+//
 TransferTRX::TransferTRX(const uint8_t tid) : TRX(tid)
 {
     _bus = xSemaphoreCreateBinary();
@@ -50,13 +57,13 @@ TransferTRX::~TransferTRX()
 }
 
 // Start transfer (Sender)
-bool TransferTRX::send(const MACAddress& addr, const char* path)
+bool TransferTRX::send(const MACAddress& addr, const String& path)
 {
     if(_state != Status::None) { return false; }
 
     bus_lock([this, &path]()
     {
-        this->_crc16 = calculateCRC16(path);
+        this->_crc32 = calculateCRC32(path.c_str());
         this->_file = sd.open(path);
         this->_size = (bool)(this->_file) ? this->_file.available() : 0;
     });
@@ -64,18 +71,18 @@ bool TransferTRX::send(const MACAddress& addr, const char* path)
 
     _addr = addr;
 
-    String s(path);
-    _fname = s.substring(s.lastIndexOf('/') + 1);
+    _path = path;
+    _fname = path.substring(path.lastIndexOf('/') + 1);
     _progress = _length = 0;
     _state = Status::Send;
     _sequence = 0;
 
-    M5_LOGI("Send file info sz:%lu crc:%u", _size, _crc16);
+    M5_LOGI("Send file info sz:%lu CRC:%x", _size, _crc32);
     Payload pl;
     pl.type = 0;
     snprintf(pl.name, sizeof(pl.name), "%s", _fname.c_str());
     pl.fileSize = _size;
-    pl.crc16 = _crc16;
+    pl.crc32 = _crc32;
 
     _startTime = millis();
     _sequence = postReliable(_addr, pl);
@@ -100,7 +107,21 @@ void TransferTRX::abort()
         
 void TransferTRX::update(const unsigned long ms)
 {
-    if(_state != Status::Send || !_sequence) { return; }
+    switch(_state)
+    {
+    case Status::Send: update_send(); break;
+    case Status::Recv: update_recv(); break;
+    }
+}
+
+void TransferTRX::update_recv()
+{
+    if(_retrunAck) { post_ack(_addr); _retrunAck = false; }
+}
+
+void TransferTRX::update_send()
+{
+    if(!_sequence) { return; }
     if(!delivered(_sequence, _addr)) { return; }
 
     M5_LOGV("deliverd %llu", _sequence);
@@ -158,29 +179,33 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
     switch(pl->type)
     {
     case 0: // Start transfer (Receiver)
-        if(_state != None) { M5_LOGI("Failed to start transfer(R)"); break; }
-
-        _addr = addr;
-        _fname = pl->name;
-        _size = pl->fileSize;
-        _crc16 = pl->crc16;
-        _progress = _length = 0;
-
-        M5_LOGI("Stanby for incomming [%s] %lu", pl->name, _size);
-
-        _file = bus_lock([this]()
         {
-            return sd.open("/aaa.aaa", O_WRITE | O_CREAT | O_TRUNC);
-        });
-        if(_file)
-        {
-            _state = Status::Recv;
-            _startTime = millis();
-            post_ack(_addr);
-        }
-        else
-        {
-            M5_LOGE("Failed to open [%s]", pl->name);
+            if(_state != None) { M5_LOGI("Failed to start transfer(R)"); break; }
+
+            _addr = addr;
+            _fname = pl->name;
+            _path = _dir + _fname;
+            _size = pl->fileSize;
+            _crc32 = pl->crc32;
+            _progress = _length = 0;
+
+            M5_LOGI("Stanby for incomming [%s] %lu", _fname.c_str(), _size);
+            
+            _file = bus_lock([this]()
+            {
+                return sd.open(this->_path.c_str(), O_WRITE | O_CREAT | O_TRUNC);
+            });
+
+            if(_file)
+            {
+                _state = Status::Recv;
+                _startTime = millis();
+                _retrunAck = true;
+            }
+            else
+            {
+                M5_LOGE("Failed to open [%s]", _path.c_str());
+            }
         }
         break;
     case 1: // Receive data block
@@ -199,8 +224,8 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
                 M5_LOGE("Failed to write %lu/%lu", len, pl->bufSize);
                 // TODO;retry
             }
-            post_ack(_addr);
-
+            _retrunAck = true;
+            
             _length = pl->bufSize;
             _progress += len;
             auto now = millis();
@@ -215,12 +240,7 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
                 _state = Status::None;
                 _endTime = now;
                 _speed = ((float)_size / timeRequired()) * 1000.f;
-                auto crc = bus_lock([]()
-                {
-                    return calculateCRC16("/aaa.aaa");
-                });
-                M5_LOGI("Finished %lu (%f) %lu CRC:(%u/%u) %s", timeRequired(), transferedRate() * 100,
-                        _speed, _crc16, crc, crc == _crc16 ? "OK" : "NG");
+                M5_LOGI("Finished %lu (%f) %lu CRC:%x", timeRequired(), transferedRate() * 100, _speed, _crc32);
             }
             //
         }

@@ -407,7 +407,7 @@ class Communicator
     Communicator();
     
     ///@name Callback
-    ///@note Called from WiFi-task.
+    ///@note Called from WiFi-task (Core 0)
     /// @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html
     ///@{
     static void callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status);
@@ -621,19 +621,17 @@ class Transceiver
       @param data Pointer of the payload data
       @param length Length of data
       @note Called only exists the payload
-      @warning The receiving callback function also runs from the Wi-Fi task,
+      @warning The receiving callback function also runs from the Wi-Fi task (Core 0),
       @warning <em><strong>So, do not do lengthy operations in the callback function.</strong></em>
     */
     virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) {}
     
     void build_peer_map();
-    // WARN:Locked in this >>
     bool post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, const void* data = nullptr, const uint8_t length = 0);
     inline bool post_ack(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::ACK); }
     inline bool post_ack(const MACAddress& addr)   { return post_ack(static_cast<const uint8_t*>(addr)); }
     inline bool post_nul(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::NUL); }
     inline bool post_nul(const MACAddress& addr)   { return post_nul(static_cast<const uint8_t*>(addr)); }
-    // <<
     
     uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 

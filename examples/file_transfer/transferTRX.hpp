@@ -19,7 +19,7 @@ struct Payload
         {
             char name[128+1]{};
             file_size_t fileSize{};
-            uint16_t crc16{};
+            uint32_t crc32{};
         };
         // type == 1 (Sender to Receiver)
         struct
@@ -38,31 +38,10 @@ struct Payload
 //
 using File = FsFile;
 
-#if 0
-// File wrapper with cache memory
-class TransferFile : public File
-{
-  public:
-    TransferFile(size_t cacheSize = 1024) : File();
-    virtual ~TransferFile();
-
-    int read(void* buf, size_t count);
-    size_t write(const void* buf, size_t count);
-    //  bool isReadOnly() const {
-    //        bool isWritable() const {
-
-  private:
-    uint8_t* _cache{};
-    size_t _cached{};
-};
-#endif
-
-
 // Transceiver for file transfer
 class TransferTRX : public TRX
 {
   public:
-    using callback = void(*)(const Payload& pl);
     enum Status : uint8_t { None, Send, Recv };
 
     TransferTRX(const uint8_t tid);
@@ -75,14 +54,21 @@ class TransferTRX : public TRX
     unsigned long startTime() const { return _startTime; }
     unsigned long timeRequired() const { return _endTime - _startTime; }
     const char* fname() const { return _fname.c_str(); }
+    const char* path() const { return _path.c_str(); }
     file_size_t fileSize() const { return _size; }
     file_size_t transferedSize() const { return _progress; }
     float transferedRate() const { return (float)_progress / _size; }
     file_size_t averageSpeed() const { return _speed; }
+    uint16_t crc32() const { return _crc32; }
+
+    // For receiver 
+    void setDir(const char* d) { _dir = d; } // Download dir
     
-    bool send(const goblib::esp_now::MACAddress& addr, const char* path);
+    bool send(const goblib::esp_now::MACAddress& addr, const String& path);
+    inline bool send(const goblib::esp_now::MACAddress& addr, const char* path) { return send(addr, String(path)); }
     void abort();
-    
+
+    // bus lock
     struct lock_guard_bs
     {
         explicit lock_guard_bs (SemaphoreHandle_t& s) : _sem(&s) { xSemaphoreTake(*_sem, portMAX_DELAY); }
@@ -107,23 +93,31 @@ class TransferTRX : public TRX
     virtual void onReceive(const goblib::esp_now::MACAddress& addr, const void* data, const uint8_t length) override;
     
   private:
+    void update_send();
+    void update_recv();
+
+    goblib::esp_now::MACAddress _addr;
+    
     File _file;
     String _fname;
     file_size_t _size{};
     file_size_t _progress{};
     file_size_t _length{};
     file_size_t _speed{};
-    uint16_t _crc16{};
-
+    uint16_t _crc32{};
     uint64_t _sequence{};
-    unsigned long _startTime{}, _endTime{};
-    goblib::esp_now::MACAddress _addr;
-    callback callback_func{};
-    Status _state{None};
 
-    String _downloadDir;
+    unsigned long _startTime{}, _endTime{};
+
+    Status _state{None};
+    bool _retrunAck{};
+
+    String _dir{"/"}; // for recv
+    String _path;
     
     mutable SemaphoreHandle_t _bus{}; // For exclusive control of card access and lcd
 };
+
+uint32_t calculateCRC32(const char* path);
 
 #endif
