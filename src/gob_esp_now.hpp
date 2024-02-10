@@ -43,7 +43,13 @@ namespace goblib {
  */
 namespace esp_now {
 
-constexpr char LIB_TAG[] = "gen"; //!< @brief Tag for logging
+constexpr char LIB_TAG[] = "GEN"; //!< @brief Tag for logging
+
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+    template<typename K, typename T> using map_t = std::map<K,T>;
+#else
+    template<typename K, typename T> using map_t = goblib::esp_now::vmap<K,T>;
+#endif
 
 template<typename E> constexpr inline typename std::underlying_type<E>::type to_underlying(const E& e) noexcept
 {
@@ -64,7 +70,7 @@ inline uint64_t restore_u64_later(const uint64_t u64, const uint8_t u8)
 
 /*!
   @struct lock_guard
-  @brief Lock in scope
+  @brief Lock in scope for recursive semaphor
  */
 struct lock_guard
 {
@@ -135,7 +141,7 @@ struct RUDP
     flag_t  flag{};     //!< @brief flag ==0:Unreliable !=0:Reliable flags
     uint8_t sequence{}; //!< @brief Lower 8bit of sequence
     uint8_t ack{};      //!< @brief Lower 8bit of ack
-    uint8_t _sum{};     //!< @breif Check sum (Not supported)
+    uint8_t _sum{};     //!< @breif Check sum (Not supported yet...)
 
 }  __attribute__((__packed__));
 
@@ -162,8 +168,8 @@ struct TransceiverHeader
     inline bool isNUL() const        { return (rudp.flag == to_underlying(RUDP::Flag::NUL)); } //!< @brief is NUL?
     inline bool hasPayload() const   { return size > sizeof(*this); } //!< @brief Has payload?
     inline uint8_t payloadSize() const { return hasPayload() ? size - sizeof(*this) : 0; } //!< @brief payload size if exists
-    ///@}
     inline uint8_t* payload() const  { return hasPayload() ? ((uint8_t*)this) + sizeof(*this) : nullptr; } //!< @brief Gets the payload pointer if exists.
+    ///@}
 }  __attribute__((__packed__));
 
 
@@ -342,7 +348,6 @@ class Communicator
       @brief Call any function with lock
       @param Func Any functor
       @param args Arguments for functor
-      @warning The same binary semaphore is used inside the communicator, so beware of deadlocks.
     */
     template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
             -> decltype(func(std::forward<Args>(args)...))
@@ -369,7 +374,6 @@ class Communicator
     ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
     ///@{
     String debugInfo() const; //!< @brief Gets the information string with lock
-    virtual String debug_info() const; //!< @brief Gets the information string
     bool isEnableDebug() const     { return _debugEnable; } //!< @brief Are debugging features enabled?
     void enableDebug(const bool b) { _debugEnable = b;    } //!< @brief Enable/Disable debugging features
     ///@}
@@ -396,14 +400,6 @@ class Communicator
 
     } __attribute__((__packed__));
 
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using queue_map_t = std::map<MACAddress, std::vector<uint8_t>>;
-    using state_map_t = std::map<MACAddress, State>;
-#else
-    using queue_map_t = vmap<MACAddress, std::vector<uint8_t>>;
-    using state_map_t = vmap<MACAddress, State>;
-#endif
-
     Communicator();
     
     ///@name Callback
@@ -427,7 +423,6 @@ class Communicator
     
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
-    volatile bool _canSend{true};
     Role _role{Role::None};
 
     MACAddress _addr{}; // Self address
@@ -439,13 +434,15 @@ class Communicator
     unsigned long _lastSentTime{};
     MACAddress _lastSentAddr{};
     std::vector<uint8_t> _lastSentQueue{};
-    queue_map_t _queue;
 
-    state_map_t _state;
+    map_t<MACAddress, std::vector<uint8_t>> _queue;
+    map_t<MACAddress, State> _state;
 
     notify_function _notifyFunction{};
 
-    unsigned long _time{};
+    // Time between esp_send and callback_onSent
+    uint64_t _sentCount{};
+    uint64_t _time{};
     unsigned long _minTime{99999999};
     unsigned long _maxTime{};
     
@@ -561,7 +558,6 @@ class Transceiver
       @brief Call any function with lock
       @param Func Any functor
       @param args Arguments for functor
-      @warning The same binary semaphore is used inside the transceiver, so beware of deadlocks.
       @details Example
       @code{.cpp}
       // Example in class functions
@@ -654,11 +650,6 @@ class Transceiver
         unsigned long recvTime{}; // R
         bool needReturnACK{}; // R
     } __attribute__((__packed__));
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    using info_map_t = std::map<MACAddress, PeerInfo>;
-#else
-    using info_map_t = vmap<MACAddress, PeerInfo>;
-#endif
     
   private:
     Transceiver(); // System transceiver for communicator
@@ -667,9 +658,9 @@ class Transceiver
     
   private:
     const uint8_t _tid{};    // Transceiver unique identifier (0 reserved)
-    info_map_t _peerInfo;    // peer information for RUDP (ACK with payload)
-    
+    map_t<MACAddress, PeerInfo> _peerInfo;
     mutable SemaphoreHandle_t _sem{};
+
     friend class Communicator;
 };
 //

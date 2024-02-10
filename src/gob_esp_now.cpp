@@ -271,9 +271,6 @@ void Communicator::end()
     }
 }
 
-// TODO
-// SYN パラメータの Comm反映
-// SYN-SYN+ACK-ACK は その前に SYNするかを問い合わせる専用BROADCAST
 void Communicator::update()
 {
     if(!_began) { return; }
@@ -292,16 +289,17 @@ void Communicator::update()
         // Update transceivers
         for(auto& t : _transceivers)
         {
-            t->_update(ms, _config);
-            t->update(ms);
+            t->with_lock([this, &t, &ms]()
+            {
+                t->_update(ms, this->_config);
+                t->update(ms);
+            });
         }
-        //    if(!_canSend || numOfPeer() == 0) { return; }
 
         // Detect communication failure
         for(auto& ss : _state)
         {
-            if(!ss.first) { continue; }
-            if(ss.second.retry > _config.maxRetrans)
+            if(_config.maxRetrans && ss.second.retry > _config.maxRetrans)
             {
                 LIB_LOGD("<Exceeded retry count>");
                 notify(Notify::ConnectionLost, &ss.first);
@@ -313,7 +311,6 @@ void Communicator::update()
         // second : packet
         for(auto& q : _queue)
         {
-            //        if(!_canSend || q.second.empty() || !_state.count(q.first)) { continue; }
             if(q.second.empty() || !_state.count(q.first)) { continue; }
 
             // Send / resend
@@ -321,8 +318,10 @@ void Communicator::update()
                (/*_state[q.first].state != State::None &&*/
                    ms > _state[q.first].sentTime + _config.retransmissionTimeout))
             {
-                if(_state[q.first].state != State::None) { LIB_LOGE("resend: %d", ms > _state[q.first].sentTime + _config.retransmissionTimeout); }
-
+                if(_state[q.first].state != State::None)
+                {
+                    LIB_LOGW("Resend to [%s]: %d times", q.first.toString().c_str(), _state[q.first].retry + 1);
+                }
                 LIB_LOGD("---- %s:%u:[%s]",
                          _state[q.first].state == State::None ? "Send" : "Resend",
                          _state[q.first].retry,q.first.toString().c_str());
@@ -332,10 +331,21 @@ void Communicator::update()
                 if(!sent) { continue; }
                 if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
                 else { ++_state[q.first].retry; }
-                break;
+
+                // Wait called callback_onSent
+                xSemaphoreGiveRecursive(_sem);
+                xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
+                xSemaphoreTakeRecursive(_sem, portMAX_DELAY);
+                auto oneTime = micros() - startTime;
+                ++_sentCount;
+                _time += oneTime;
+                _minTime = std::min(oneTime, _minTime);
+                _maxTime = std::max(oneTime, _maxTime);
+                //break;
             }
         }
     }
+#if 0
     // Wait onSent
     if(sent)
     {
@@ -345,10 +355,10 @@ void Communicator::update()
         _minTime = std::min(oneTime, _minTime);
         _maxTime = std::max(oneTime, _maxTime);
     }
-
+#endif
+    
     lock_guard _(_sem);
     // Detect communication failures and heartbeat
-    //    if(!_canSend || _transceivers.size() < 2 || !_config.nullSegmentTimeout) { return; }
     if(_transceivers.size() < 2 || !_config.nullSegmentTimeout) { return; }
 
     for(auto& ss : _state)
@@ -418,7 +428,7 @@ bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_
 
     if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { LIB_LOGE("peer_addr not exists"); return false; }
 
-    if(!_began || !_canSend) { LIB_LOGE("Not ready to send"); return false; }
+    if(!_began) { LIB_LOGE("Not ready to send"); return false; }
     if(sizeof(CommunicatorHeader) + length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Packet overflow"); return false; }
 
     std::vector<uint8_t> v;
@@ -444,7 +454,7 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     MACAddress addr(peer_addr);
     if(((bool)addr && !existsPeer(addr)) || packet.empty() || ((CommunicatorHeader*)packet.data())->count == 0)
     {
-        LIB_LOGW("No peer or empty packet %s", addr.c_str());
+        LIB_LOGW("No peer or empty packet %s", addr.toString().c_str());
         return false;
     }
 
@@ -471,7 +481,6 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     _lastSentAddr = addr;
     _lastSentQueue = packet;
     packet.clear();
-    //    _canSend = false;
 
     return true;
 }
@@ -696,17 +705,17 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     bool succeed{status == ESP_NOW_SEND_SUCCESS};
     if(!succeed) { LIB_LOGW("FAILED"); }
 
-    lock_guard _(_sem);
     {
+    lock_guard _(_sem);
     // Composite the remaining elements and those added to the queue between esp_send and the callback
-    if(succeed)
+        if(succeed)
     {
         remove_not_need_resend(_lastSentQueue);
     }
     auto sz = _lastSentQueue.size();
     auto b = !_queue[addr].empty();
     _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
-    if(b) { LIB_LOGE("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
+    if(b) { LIB_LOGW("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
 
     if(_state.count(addr))
     {
@@ -714,7 +723,6 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
         _state[addr].sentTime = millis();
     }
     }
-    //    _canSend = true;
     xQueueSend(_permitToSend, nullptr, 0);
 }
 
@@ -774,7 +782,6 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                 if(correct)
                 {
                     t->on_receive(addr, th);
-                    if(th->hasPayload()) { t->onReceive(addr, th->payload(), th->payloadSize()); }
                 }
                 else
                 {
@@ -796,11 +803,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
 String Communicator::debugInfo() const
 {
     lock_guard _(_sem);
-    return debug_info();
-}
-                   
-String Communicator::debug_info() const
-{
+
     String s;
     s += formatString("Communicator app_id:%u, %zu transceivers\n", _app_id, _transceivers.size());
     s += formatString("config:<%u/%u/%u/%u %u:%u:%u:%u>\n",
@@ -850,7 +853,8 @@ String Communicator::debug_info() const
                           st.second.state, st.second.retry, st.second.sentTime, st.second.recvTime);
     }
 
-    s += formatString("minTime:%lu maxTime:%lu\n", _minTime, _maxTime);
+    s += formatString("aveTime:%llu minTime:%lu maxTime:%lu\n",
+                      _sentCount ? _time / _sentCount : 0, _minTime, _maxTime);
     s.trim();
     return s;
 }
@@ -1035,8 +1039,6 @@ void Transceiver::_update(const unsigned long ms, const Communicator::config_t& 
     // Force send ACK?
     std::set<MACAddress> addrs;
 
-    lock_guard _(_sem);
-
     for(auto& pi : _peerInfo)
     {
         if(!pi.first || !esp_now_is_peer_exist(pi.first.data()) || !pi.second.needReturnACK) { continue; }
@@ -1094,6 +1096,12 @@ void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th
     if(th->isNUL())
     {
         post_ack(addr);
+    }
+
+    if(th->hasPayload())
+    {
+        lock_guard _(_sem);
+        onReceive(addr, th->payload(), th->payloadSize());
     }
 }
 

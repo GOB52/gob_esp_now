@@ -112,8 +112,6 @@ class MACAddress
       @param mask Mask upper address if true
      */
     String toString(const bool mask = false) const;
-    //! @brief Output as a const char*
-    inline const char* c_str(const bool mask = false) const { return toString(mask).c_str(); }
     
     /// @cond 0
     friend bool operator==(const MACAddress& a, const MACAddress& b);
