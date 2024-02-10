@@ -111,6 +111,7 @@ void TransferTRX::update(const unsigned long ms)
     {
     case Status::Send: update_send(); break;
     case Status::Recv: update_recv(); break;
+    default: break;
     }
 }
 

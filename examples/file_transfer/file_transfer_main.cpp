@@ -120,7 +120,7 @@ void comm_callback(const Notify notify, const void* arg)
         {
             lcd.clear(0);
             lcd.setCursor(0,0);
-            lcd.printf("CONNECTION LOST\n%s", addr.c_str(true));
+            lcd.printf("CONNECTION LOST\n%s", addr.toString(true).c_str());
         });
         break;
     default: break;
@@ -148,7 +148,7 @@ void disp()
     {
         auto cur_state = transfer.status();
         lcd.setCursor(0,0);
-        lcd.printf("%s\n", status_string(cur_state));
+        lcd.printf("%s:%u\n", status_string(cur_state), esp_get_free_heap_size());
         lcd.printf("%s\n", transfer.fname());
         lcd.printf("%lu / %lu\n", transfer.transferedSize(), transfer.fileSize());
         auto rate = transfer.transferedRate();
@@ -157,7 +157,7 @@ void disp()
         auto s = pt/1000;
         auto m = s/60;
         auto h = m/60;
-        lcd.printf("%02ld:%02ld:%02ld\n", h, m % 60, s % 60);
+        lcd.printf("%02ld:%02ld:%02ld:%03ld\n", h, m % 60, s % 60, pt % 1000);
         lcd.fillRect(0, lcd.height() - 64, lcd.width() * rate, 32, TFT_BLUE);
         lcd.printf("%lu\n", transfer.averageSpeed());
         lcd.printf("%s:%x", recv_crc ? "FILE CRC" : "CRC", recv_crc ? recv_crc : transfer.crc32());
@@ -205,6 +205,7 @@ void setup()
     unifiedButton.setFont(&fonts::Font4);
 
     //
+    auto before = esp_get_free_heap_size();
     auto& comm = Communicator::instance();
     M5_LOGI("  Self: %s", comm.address().toString().c_str());
     for(auto& addr : devices)
@@ -225,19 +226,21 @@ void setup()
     
     auto cfg = comm.config();
     cfg.retransmissionTimeout = 200;
-    //cfg.retransmissionTimeout = 1000;
-    //cfg.cumulativeAckTimeout = 100;
     cfg.maxRetrans = 4;
-    //cfg.nullSegmentTimeout = 5000;
-    cfg.nullSegmentTimeout = 0;
+    cfg.nullSegmentTimeout = 5000;
+    //cfg.nullSegmentTimeout = 0; // Don't use heartbeat
     comm.begin(APP_ID, cfg);
+    auto after = esp_get_free_heap_size();
+    M5_LOGI("Library usage:%u : %uK", before - after, (before - after) / 1024);
+    
     esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
     M5_LOGI("%s", comm.debugInfo().c_str());
 
-    xTaskCreateUniversal(comm_task, "comm", 1024 * 12, nullptr, 2 /*priority */, nullptr, 1 /* core */);
-    xTaskCreateUniversal(disp_task, "disp", 1024 * 12, nullptr, 1, nullptr, 0);
+    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
+    xTaskCreateUniversal(disp_task, "disp", 1024 * 8, nullptr, 1, nullptr, 0);
 
-    M5_LOGI("Heap as end of setup:%u", esp_get_free_heap_size());
+    M5_LOGI("Heap at end of setup:%u", esp_get_free_heap_size());
+    //Heap:212708
     lcd.clear(TFT_DARKGREEN);
 }
 

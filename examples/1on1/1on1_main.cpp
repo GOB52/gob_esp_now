@@ -1,143 +1,78 @@
 /*
   gob_esp_now example: 1on1
-    1 on 1 sending and receiving
+  Send the status of M5.BtnX to the other device.
 */
 #include <M5Unified.h>
 #include <gob_esp_now.hpp>
 #include <gob_unifiedButton.hpp> // for CoreS3
 #include <WiFi.h>
+#include "../shared/buttonTRX.hpp"
 
+/*
+  WARNING
+  Set MAC Address string of two devices by compile option or direct description
+  e.g. #define DEVICE_A "11:22:33:44:55"
+ */
 #if !defined(DEVICE_A)
-#error "Need DEVICE_A defines is required. Specify in platformio.ini or write here."
-// #define DEVICE_A "12:34:56:78:9a:bc"
+#error Need define DEVICE_A
 #endif
 #if !defined(DEVICE_B)
-#error "Need DEVICE_B defines is required. Specify in platformio.ini or write here."
-// #define DEVICE_B "ba:98:76:54:32:10"
+#error Need define DEVICE_B
 #endif
 
 using namespace goblib::esp_now;
 
 namespace
 {
-constexpr uint8_t APP_ID = 12;
-constexpr uint8_t BUTTON_TRANSCEIVER_ID = 34;
-constexpr uint8_t COLOR_TRANSCEIVER_ID = 56;
+// Communication takes place between devices with the same value of Application ID and Transceiver ID.
+constexpr uint8_t APP_ID = 11;
+constexpr uint8_t BUTTON_TRANSCEIVER_ID = 1;
 
-MACAddress dest;
-
-// Data structures for transmission and reception, and transceivers
-union ButtonData
+MACAddress devices[] =
 {
-    volatile uint8_t btn{};
-    struct
-    {
-        uint8_t btnA : 1;
-        uint8_t btnB : 1;
-        uint8_t btnC : 1;
-    };
+    MACAddress(DEVICE_A),
+    MACAddress(DEVICE_B),
 };
-
-// Button Status Transceiver
-class ButtonTransceiver : public Transceiver
-{
-  public:
-    explicit ButtonTransceiver(const uint8_t tid) : Transceiver(tid) {}
-
-    bool received() const { return _received; }
-    void clear() { _received = false; }
-    const ButtonData& data() const { return _data; }
-    
-    // Transmitted data with APP_ID and Transceiver ID matching comes in. (Called from another task)
-    virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) override
-    {
-        with_lock([this](const void* d)
-        {
-            auto pd = (ButtonData*)d;
-            M5_LOGI("[RB]:Btn:%x", pd->btn);
-            this->_data = *pd;
-            this->_received = true;
-        }, data);
-        //        if(_received) { post_ack(addr); }
-    }
-    
-  private:
-    ButtonData _data{};
-    volatile bool _received{};
-};
-
-class ColorTransceiver : public Transceiver
-{
-  public:
-    explicit ColorTransceiver(const uint8_t tid) : Transceiver(tid) {}
-
-    bool received() const { return _received; }
-    void clear() { _received = false; }
-    uint16_t data() const { return _color; }
-
-    // Transmitted data with APP_ID and Transceiver ID matching comes in. (Called from another task)
-    virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) override
-    {
-        with_lock([this](const void* d)
-        {
-            auto pd = (uint16_t*)d;
-            M5_LOGI("Clr:%x", *pd);
-            this->_color = *pd;
-            this->_received = true;
-        }, data);
-    }
-  private:
-    volatile uint16_t _color{};
-    volatile bool _received{};
-};
-
-ButtonTransceiver btnT(BUTTON_TRANSCEIVER_ID);
-ColorTransceiver colorT(COLOR_TRANSCEIVER_ID);
+MACAddress target;
+ButtonTRX  buttonTRX(BUTTON_TRANSCEIVER_ID);
 
 auto& lcd = M5.Display;
+auto& comm = Communicator::instance();
 goblib::UnifiedButton unifiedButton;
+bool failed{};
 
-// 独自通信設定例
-Communicator::config_t cfg =
+#if 0
+const char* button_state_string[] =
 {
-    // 再送タイマー待ち時間
-    .retransmissionTimeout = 1000*4,
-    //.cumulativeAckTimeout = 400,
-    // 累積確認応答タイマー待ち時間
-    //.cumulativeAckTimeout = 200,
-    .cumulativeAckTimeout = 1000*2,
-    // NUL 送信タイマー (Heartbeat)
-    .nullSegmentTimeout = Communicator::DEFAULT_NULL_TIMEOUT,
-    // 転送状態タイマー(未対応)
-    .transferStateTimeout = Communicator::DEFAULT_TRANSFER_STATE_TIMEOUT, 
-    // 最大再送信回数
-    //    .maxRetrans = Communicator::DEFAULT_MAX_RETRANS,
-    .maxRetrans = 4,
-    // 確認応答貯留最大数
-    //.maxCumAck = Communicator::DEFAULT_MAX_CUM_ACK,
-    .maxCumAck = 4,
-    // EACK 送信基準貯留数 (未対応)
-    .maxOutOfSeq = Communicator::DEFAULT_MAX_OUT_OF_SEQ,
-    // 自動リセット回数(未対応)
-    .maxAutoReset = Communicator::DEFAULT_MAX_AUTO_RESET
+    "nochange ",
+    "clicked  ",
+    "hold     ",
+    "decide_cc",
 };
-
-bool postColor()
+const char* bstr(const m5::Button_Class::button_state_t s)
 {
-    bool ret{};
-
-    uint16_t color = esp_random() & 0xFFFF;
-    M5_LOGI("Post color:%x", color);
-    lcd.clear(color);
-    lcd.setTextColor(color ^ 0xFFFF, color);
-
-    // So it may not reach to destination, because post unreliable.
-    ret = colorT.postUnreliable(dest, color);
-    //ret = colorT.postUnreliable(color);
-    if(!ret) { M5_LOGE("Failed to post color"); }
-    return ret;
+    return button_state_string[(uint8_t)s];
 }
+#endif
+
 //
+}
+
+// This callback is called in the same task as Communicator::update()
+void comm_callback(const Notify notify, const void* arg)
+{
+    failed = true;
+    MACAddress addr;
+    switch(notify)
+    {
+    case Notify::ConnectionLost:
+        addr = *(const MACAddress*)arg;
+        lcd.clear(0);
+        lcd.setCursor(0,0);
+        lcd.printf("CONNECTION LOST\n%s", addr.toString(true).c_str());
+        break;
+    default: break;
+    }
 }
 
 void setup()
@@ -153,146 +88,93 @@ void setup()
     WiFi.mode(WIFI_STA);
 
     auto before = esp_get_free_heap_size();
-    auto& comm = Communicator::instance();
 
-    if(MACAddress(DEVICE_A) == comm.address()) { dest.parse(DEVICE_B); }
-    if(MACAddress(DEVICE_B) == comm.address()) { dest.parse(DEVICE_A); }
+    comm.registerTransceiver(&buttonTRX);
     M5_LOGI("  Self: %s", comm.address().toString().c_str());
-    M5_LOGI("Target: %s", dest.toString().c_str());
-    //
-
-    ///////////////////////////
-#if 0
-    if(!dest)
+    for(auto& addr : devices)
     {
-        M5_LOGE("Not the device at the address specified by define");
-        M5_LOGE("DEVICE_A:[%s] DEVICE_B:[%s]", DEVICE_A, DEVICE_B);
-        lcd.clear(TFT_RED);
-        while(1) { delay(10000); }
+        if(!addr || addr == comm.address()) { continue; }
+        M5_LOGI("Target: %s", addr.toString().c_str());
+        comm.registerPeer(addr);
+        target = addr;
     }
-#endif
+    comm.setRole(comm.address() == devices[0] ? Communicator::Role::Primary : Communicator::Role::Secondary);
+    comm.registerNotifyCallback(comm_callback);
 
-    // Multicasting
-    //uint8_t multicastAddressA[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAA};
-    //dest = MACAddress(multicastAddressA);
+    if(!target || !comm.existsPeer(target))
+    {
+        M5_LOGE("Not registered target");
+        lcd.clear(TFT_RED);
+        while(true) { delay(1000); }
+    }
+    
+    auto cfg = comm.config();
+    cfg.retransmissionTimeout = 300;
+    cfg.cumulativeAckTimeout = 100;
+    cfg.maxRetrans = 4;
+    //cfg.nullSegmentTimeout = 1000 * 5;
+    cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
 
-    if(!comm.registerPeer(dest)) { M5_LOGE("Failed to register"); }
-    //    comm.registerPeer(MACAddress("f4:22:33:44:55:66")); // nonexistent address for test
-    //    comm.registerPeer(MACAddress("a4:cf:12:6d:87:1c")); // device none
-
-    //comm.registerPeer(MACAddress("f4:12:fa:84:8e:48")); 
-
-    comm.registerTransceiver(&colorT);
-    comm.registerTransceiver(&btnT);
-
-    comm.setRole(comm.address() < dest ? Communicator::Role::Primary : Communicator::Role::Secondary);
-    comm.begin(APP_ID, &cfg); // Set unique application identifier
-    //comm.begin(APP_ID);
+    comm.begin(APP_ID, cfg);
     
     auto after = esp_get_free_heap_size();
     M5_LOGI("library usage:%u", before - after);
-    
-#if !defined(NDEBUG)
+
+    esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
     M5_LOGI("%s", comm.debugInfo().c_str());
-
-    // Using debug features
-    //comm.enableDebug(true);
-    //comm.setDebugSendLoss(0.25f);
-    //comm.setDebugSendLoss(0.5f);
-    //comm.setDebugSendLoss(0.9f);
-
-    //comm.setDebugReceiveLoss(0.5f);
-#endif
     
-    lcd.setFont(&fonts::Font2);
+    lcd.setFont(&fonts::Font4);
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
-    lcd.setTextColor(TFT_BLACK, TFT_DARKGREEN);
 }
 
 void loop()
 {
-    //    static unsigned long ms = millis();
     bool dirty{};
     
     M5.update();
     unifiedButton.update();
-    
-    // Send button status when changes.
-    static ButtonData last;
-    ButtonData d;
-    d.btnA = M5.BtnA.isPressed();
-    d.btnB = M5.BtnB.isPressed();
-    //d.btnC = M5.BtnC.isPressed();
-    if(last.btn != d.btn)
+
+    // Starts when any key is pressed or received from the other device.
+    if(M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnC.isPressed())
     {
-        M5_LOGI("Post btn:%x", d.btn);
-        // Data accumulation(Send not yet).
-        if(!btnT.postReliable(dest, d)) { M5_LOGE("Failed to post btn"); }
-        //if(!btnT.postReliable(d)) { M5_LOGE("Failed to post btn"); }
-        last = d;
+        buttonTRX.begin();
     }
-    if(M5.BtnB.wasHold())
+    if(M5.BtnPWR.wasClicked())
     {
-        postColor();
+        M5_LOGI("%s", comm.debugInfo().c_str());
     }
     
-    // Change to received background color.
-    if(colorT.with_lock([](){ return colorT.received(); }))
-    {
-        colorT.with_lock([]()
-        {
-            uint16_t color = colorT.data();
-            colorT.clear();
-            lcd.clear(color);
-            lcd.setTextColor(color ^ 0xFFFF, color);
-        });
-        dirty = true;
-    }
+    // Post my button status if TRX has begun.(Check in postReliable)
+    buttonTRX.postReliable(target, M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed());
 
-#if !defined(NDEBUG)
-    if(M5.BtnC.wasClicked())
-    {
-        M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
-    }
-#endif
-    
-    // [*1] Send data in this function if posted.
-    Communicator::instance().update(); 
-
-    // Draw my button status.
-    lcd.fillRect(16 + (64+16) * 0, 160, 64,32, d.btnA ? TFT_WHITE : TFT_BLACK);
-    lcd.fillRect(16 + (64+16) * 1, 160, 64,32, d.btnB ? TFT_WHITE : TFT_BLACK);
-    lcd.fillRect(16 + (64+16) * 2, 160, 64,32, d.btnC ? TFT_WHITE : TFT_BLACK);
-    
-    // Draw the received button status.
-    static ButtonData rd;
-    if(btnT.with_lock([]() { return btnT.received(); }))
-    {
-        // Functions called by with_lock are thread-safe
-        btnT.with_lock([]()
-        {
-            rd = btnT.data();
-            btnT.clear();
-        });
-    }
-    lcd.fillRect(16 + (64+16) * 0, 120, 64,32, rd.btnA ? TFT_WHITE : TFT_BLACK);
-    lcd.fillRect(16 + (64+16) * 1, 120, 64,32, rd.btnB ? TFT_WHITE : TFT_BLACK);
-    lcd.fillRect(16 + (64+16) * 2, 120, 64,32, rd.btnC ? TFT_WHITE : TFT_BLACK);
-
-    //
-    uint64_t ts,rs,ack;
-    auto fhgt= lcd.fontHeight();
-    lcd.setCursor(8,0);
-    //    std::tie(ts, rs, ack) = btnT.with_lock([](){ return std::make_tuple(btnT.sequence(), btnT.sequence(dest), btnT.ack(dest)); });
-    //    lcd.printf("[B] S:%llu R:%llu A:%llu", ts, rs, ack);
-    //lcd.setCursor(8,fhgt*1);
-    //    std::tie(ts, rs, ack) = colorT.with_lock([](){ return std::make_tuple(colorT.sequence(), colorT.sequence(dest), colorT.ack(dest)); });
-    //    lcd.printf("[C] S:%llu R:%llu A:%llu", ts, rs, ack);
-    lcd.setCursor(8,fhgt*1);
-    lcd.printf("Heap:%u", esp_get_free_heap_size());
-    lcd.setCursor(8,fhgt*2);
-    lcd.printf("MAC:%s", Communicator::instance().address().toString(true).c_str());
-
+    comm.update();
     unifiedButton.draw(dirty);
+
+    if(failed) { return; }
+
+    // Can get the other device's button state like M5.BtnX
+    auto& a = buttonTRX.BtnA(target);
+    auto& b = buttonTRX.BtnB(target);
+    auto& c = buttonTRX.BtnC(target);
+
+    lcd.setCursor(0,0);
+    lcd.printf("%s Heap:%u\n", buttonTRX.enabled() ? "COMM" : "NONE", esp_get_free_heap_size());
+    lcd.printf("  Self:%s\n", Communicator::instance().address().toString(true).c_str());
+    lcd.printf("Target:%s\n", target.toString(true).c_str());
+
+    // Print button status that received from target
+    lcd.setCursor(0,96);
+    /*
+    lcd.printf(" BtnA: %s\n", bstr(a.getState()));
+    lcd.printf(" BtnB: %s\n", bstr(b.getState()));
+    lcd.printf(" BtnC: %s\n", bstr(c.getState()));
+    */
+    lcd.printf(" A: P:%dR:%dH:%dWC:%dWDC:%d\n",
+               a.isPressed(), a.isReleased(), a.isHolding(), a.wasClicked(), a.wasDoubleClicked());
+    lcd.printf(" B: P:%dR:%dH:%dWC:%dWDC:%d\n",
+               b.isPressed(), b.isReleased(), b.isHolding(), b.wasClicked(), b.wasDoubleClicked());
+    lcd.printf(" C: P:%dR:%dH:%dWC:%dWDC:%d\n",
+               c.isPressed(), c.isReleased(), c.isHolding(), c.wasClicked(), c.wasDoubleClicked());
+
 }
