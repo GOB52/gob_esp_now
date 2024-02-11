@@ -37,7 +37,6 @@ MACAddress target;
 ButtonTRX  buttonTRX(BUTTON_TRANSCEIVER_ID);
 
 auto& lcd = M5.Display;
-auto& comm = Communicator::instance();
 goblib::UnifiedButton unifiedButton;
 bool failed{};
 
@@ -54,7 +53,6 @@ const char* bstr(const m5::Button_Class::button_state_t s)
     return button_state_string[(uint8_t)s];
 }
 #endif
-
 //
 }
 
@@ -89,6 +87,7 @@ void setup()
 
     auto before = esp_get_free_heap_size();
 
+    auto& comm = Communicator::instance();
     comm.registerTransceiver(&buttonTRX);
     M5_LOGI("  Self: %s", comm.address().toString().c_str());
     for(auto& addr : devices)
@@ -98,7 +97,7 @@ void setup()
         comm.registerPeer(addr);
         target = addr;
     }
-    comm.setRole(comm.address() == devices[0] ? Communicator::Role::Primary : Communicator::Role::Secondary);
+    comm.setRole(comm.address() == devices[0] ? Role::Primary : Role::Secondary);
     comm.registerNotifyCallback(comm_callback);
 
     if(!target || !comm.existsPeer(target))
@@ -131,6 +130,7 @@ void setup()
 void loop()
 {
     bool dirty{};
+    auto& comm = Communicator::instance();
     
     M5.update();
     unifiedButton.update();

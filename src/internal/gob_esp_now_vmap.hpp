@@ -7,6 +7,7 @@
 #define GOB_ESP_NOW_VMAP_HPP
 
 #include <vector>
+#include <algorithm>
 
 namespace goblib { namespace esp_now {
 

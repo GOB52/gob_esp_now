@@ -108,8 +108,9 @@ class MACAddress
     bool get(const esp_mac_type_t mtype);
     bool parse(const char* str); //!< @brief Obtains an instance from a text string such as "00:00:5e:00:53:00"
     /*!
-      @brief Outputs as a String, such as "00:00:5e:00:53:00"
+      @brief Outputs as a String, such as "ab:cd:ef:12:34:56"
       @param mask Mask upper address if true
+      @note  Output "xx:xx:xx:12:34:56" if mask is true.
      */
     String toString(const bool mask = false) const;
     

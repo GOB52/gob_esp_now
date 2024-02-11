@@ -3,7 +3,7 @@
 
 #include <SdFat.h>
 #include <WString.h>
-#include <gob_esp_now.hpp>
+#include <gob_transceiver.hpp>
 
 using TRX = goblib::esp_now::Transceiver;
 using file_size_t = unsigned long; // type of File.size()

@@ -221,7 +221,7 @@ void setup()
         target = addr;
     }
     comm.registerTransceiver(&transfer);
-    comm.setRole(comm.address() == devices[0] ? Communicator::Role::Primary : Communicator::Role::Secondary);
+    comm.setRole(comm.address() == devices[0] ? Role::Primary : Role::Secondary);
     comm.registerNotifyCallback(comm_callback);
     
     auto cfg = comm.config();
