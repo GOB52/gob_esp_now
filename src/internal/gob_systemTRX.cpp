@@ -9,6 +9,12 @@
 #include "gob_esp_now.hpp"
 #include "internal/gob_esp_now_log.hpp"
 
+namespace
+{
+PROGMEM char asr_payload[] = "gob_esp_now acceptSYNRequest";
+//
+}
+
 namespace goblib { namespace esp_now {
 
 SystemTRX::SystemTRX() : Transceiver(52/*dummy value*/)
@@ -17,6 +23,11 @@ SystemTRX::SystemTRX() : Transceiver(52/*dummy value*/)
 
 SystemTRX:: ~SystemTRX()
 {
+}
+
+bool SystemTRX::acceptSYNRequest()
+{
+    return postUnreliable(goblib::esp_now::BROADCAST, asr_payload);
 }
 
 bool SystemTRX::postSYN(const MACAddress& addr, RUDP::config_t& cfg)
@@ -51,6 +62,21 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
 {
     Transceiver::on_receive(addr, th);
 
+    if(!th->isRUDP())
+    {
+        LIB_LOGD("Recv unrel");
+        const char* keyword = (const char*)th->payload();
+        if(keyword && strcmp(keyword, asr_payload) == 0)
+        {
+            LIB_LOGD("Receive acceptSYNRequest %s", addr.toString().c_str());
+
+            auto& comm = Communicator::instance();
+            auto cfg = comm.config();
+            post_rudp(addr.data(), RUDP::Flag::SYN, &cfg, sizeof(cfg));
+            return;
+        }
+    }
+    
     with_lock([this](const MACAddress& addr, const TransceiverHeader* th)
     {
         auto& comm = Communicator::instance();
@@ -76,7 +102,7 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
                 // TODO sequence.ack,ackseq....
                 comm.setRole(Role::Secondary);
                 const RUDP::config_t* cfg = (const RUDP::config_t*)th->payload();
-                //comm.applyConfig(cfg);
+                comm._config = *cfg;
                 _recvSynAddr.push_back(addr);
             }
         }

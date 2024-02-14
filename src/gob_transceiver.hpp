@@ -30,8 +30,7 @@ struct TransceiverHeader
 
     ///@name Properties
     ///@{
-    inline bool isReliable() const   { return rudp.flag; } //!< @brief is reliable data?
-    inline bool isUnreliable() const { return !rudp.flag; } //!< @brief is unreliable data?
+    inline bool isRUDP() const       { return (bool)rudp.flag; } //!< @brief is RUDP data?
     inline bool isSYN() const        { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN?
     inline bool isSYN_ACK() const    { return (rudp.flag == to_underlying(RUDP::Flag::SYN_ACK)); } //!< @brief is SYN?
     inline bool isRST() const        { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
@@ -41,7 +40,7 @@ struct TransceiverHeader
     inline bool hasPayload() const   { return size > sizeof(*this); } //!< @brief Has payload?
     inline uint8_t payloadSize() const { return hasPayload() ? size - sizeof(*this) : 0; } //!< @brief payload size if exists
     inline uint8_t* payload() const  { return hasPayload() ? ((uint8_t*)this) + sizeof(*this) : nullptr; } //!< @brief Gets the payload pointer if exists.
-    inline bool needReturnACK() const { return payload() || isNUL() || (isRST() && isACK()); }
+    inline bool needReturnACK() const { return (isACK() && payload()) || isNUL() || (isRST() && isACK()); }
     ///@}
 }  __attribute__((__packed__));
 

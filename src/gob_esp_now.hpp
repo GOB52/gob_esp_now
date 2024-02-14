@@ -50,12 +50,14 @@ enum class Role : uint8_t
   | Notify | Argument |
   | --- | --- |
   | Disconnect | const MACAddress* |
-  | ConnectionLost | const MACAddress* |  
+  | ConnectionLost | const MACAddress* |
+  | Shookhands | const MACAddress* |  
 */
 enum class Notify : uint8_t
 {
     Disconnect,     //!< @brief Actively disconnected
     ConnectionLost, //!< @brief Connection lost
+    Shookhands,     //!< @brief Completed the 3-way handshake
 };
 
 /*!
@@ -96,6 +98,7 @@ class Communicator
     ///@name Properties
     ///@{
     inline const MACAddress& address() const  { return _addr; } //!< @brief Gets the self address
+    inline const MACAddress& primaryAddress() const  { return _primaryAddr; } //!< @brief Gets the primary address if exists
     inline unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
     inline Role role() const        { return _role; } //!< @brief Gets the role type
     inline bool isPrimary() const   { return _role == Role::Primary; } //!< @brief Is role primary?
@@ -105,7 +108,7 @@ class Communicator
     ///@}
 
     //! @brief Set role
-    void setRole(const Role r) { _role = r; }
+    void setRole(const Role r) { _role = r; if(r == Role::Primary) { _primaryAddr = _addr; } }
     
     /*!
       @brief Begin communication
@@ -264,8 +267,9 @@ class Communicator
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     Role _role{Role::None};
-
+    
     MACAddress _addr{}; // Self address
+    MACAddress _primaryAddr{};
     RUDP::config_t _config{};
 
     SystemTRX* _sysTRX{}; // System transceiver
@@ -290,6 +294,8 @@ class Communicator
     bool _debugEnable{};
     float _debugSendLoss{}, _debugRecvLoss{};
 #endif
+
+    friend class SystemTRX;
 };
 //
 }}

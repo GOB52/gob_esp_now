@@ -43,10 +43,12 @@ PROGMEM const char* errTable[] =
 };
 PROGMEM const char notifyDisconnect[] = "DISCONNECT";
 PROGMEM const char notifyConnectionLost[] = "CONNECTION_LOST";
+PROGMEM const char notifyShookhand[] = "SHOOKHAND";
 PROGMEM const char* notifyStringTable[] =
 {
     notifyDisconnect,
     notifyConnectionLost,
+    notifyShookhand,
 };
 
 inline const char* notify_to_cstr(const Notify notify) { return notifyStringTable[to_underlying(notify)]; }
@@ -153,7 +155,7 @@ bool remove_not_need_resend(std::vector<uint8_t>& packet)
     {
         auto th = (TransceiverHeader*)p;
         // unreliable or only ACK with no payload
-        if(th->isUnreliable() ||  (th->onlyACK() && !th->hasPayload()) )
+        if(!th->isRUDP() ||  (th->onlyACK() && !th->hasPayload()) )
         {
             --ch->count;
             ch->size -= th->size;
@@ -188,7 +190,7 @@ Communicator:: Communicator()
     _sem = xSemaphoreCreateRecursiveMutex();
     assert(_sem);
 
-    _permitToSend = xQueueCreate(1, 0U);;
+    _permitToSend = xQueueCreate(1, 0U);
     assert(_permitToSend);
     
     _addr.get(ESP_MAC_WIFI_STA);
@@ -293,6 +295,12 @@ void Communicator::update()
         // second : packet
         for(auto& q : _queue)
         {
+            // BROADCAST ......... _state[]虫でよい かつonSent前に clear queue!
+            // 
+
+            //remove_acked(q.first, q.second);
+            
+
             if(q.second.empty() || !_state.count(q.first)) { continue; }
 
             // Send / resend
@@ -313,7 +321,7 @@ void Communicator::update()
                 if(!sent) { continue; }
                 if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
                 else { ++_state[q.first].retry; }
-
+#if 0
                 // Wait called callback_onSent
                 xSemaphoreGiveRecursive(_sem);
                 xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
@@ -323,11 +331,13 @@ void Communicator::update()
                 _time += oneTime;
                 _minTime = std::min(oneTime, _minTime);
                 _maxTime = std::max(oneTime, _maxTime);
-                //break;
+#else
+                break;
+#endif
             }
         }
     }
-#if 0
+#if 1
     // Wait onSent
     if(sent)
     {
@@ -375,7 +385,7 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     auto& packet = _queue[addr]; // Create empty packet if not exiets.
     if(packet.capacity() < ESP_NOW_MAX_DATA_LEN) { packet.reserve(ESP_NOW_MAX_DATA_LEN); } // Expand memory
 
-    // First time?
+    // Make conmmunicator header?
     if(packet.empty())
     {
         CommunicatorHeader ch{};
@@ -601,7 +611,7 @@ bool Communicator::registerPeer(const MACAddress& addr, const uint8_t channel, c
     esp_err_t ret{ESP_OK};
     if(!esp_now_is_peer_exist(addr.data()))
     {
-        LIB_LOGE("register [%s] %d/%d", addr.toString().c_str(), addr.isMulticast(), addr.isUniversal());
+        LIB_LOGD("register [%s] Multi:%d Univ:%d", addr.toString().c_str(), addr.isMulticast(), addr.isUniversal());
 
         esp_now_peer_info_t info{};
         std::memcpy(info.peer_addr, addr.data(), sizeof(info.peer_addr));
@@ -631,7 +641,7 @@ void Communicator::unregisterPeer(const MACAddress& addr)
 {
     if(!addr) { LIB_LOGE("Null address"); return; }
 
-    LIB_LOGV("unregister %s", addr.toString().c_str());
+    LIB_LOGD("unregister %s", addr.toString().c_str());
     auto ret = esp_now_del_peer(addr.data());
     {
         _queue.erase(addr);
@@ -688,32 +698,37 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     if(!succeed) { LIB_LOGW("FAILED"); }
 
     {
-    lock_guard _(_sem);
-    // Composite the remaining elements and those added to the queue between esp_send and the callback
+        lock_guard _(_sem);
+        // Composite the remaining elements and those added to the queue between esp_send and the callback
         if(succeed)
-    {
-        remove_not_need_resend(_lastSentQueue);
-    }
-    auto sz = _lastSentQueue.size();
-    auto b = !_queue[addr].empty();
-    _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
-    if(b) { LIB_LOGW("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
+        {
+            remove_not_need_resend(_lastSentQueue);
+        }
+        auto sz = _lastSentQueue.size();
+        auto b = !_queue[addr].empty();
+        _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
+        if(b) { LIB_LOGE("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
 
-    if(_state.count(addr))
-    {
-        _state[addr].state = (State::Status)((uint8_t)State::Status::Succeed + (succeed ? 0 : 1));
-        _state[addr].sentTime = millis();
-    }
+        
+        if(_state.count(addr))
+        {
+            _state[addr].state = (State::Status)((uint8_t)State::Status::Succeed + (succeed ? 0 : 1));
+            _state[addr].sentTime = millis();
+        }
     }
     xQueueSend(_permitToSend, nullptr, 0);
 }
 
 void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* data, int length)
 {
+    MACAddress addr(peer_addr);
     if(esp_now_is_peer_exist(peer_addr))
     {
-        MACAddress addr(peer_addr);
         instance().onReceive(addr, data, length);
+    }
+    else
+    {
+        LIB_LOGE("%s", addr.toString().c_str());
     }
 }
 
@@ -783,7 +798,17 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
 
 bool Communicator::acceptRequest()
 {
-    return false;
+    bool nb{};
+    if(!existsPeer(BROADCAST))
+    {
+        nb = true;
+        registerPeer(BROADCAST);
+    }
+
+    bool b = _sysTRX->acceptSYNRequest();
+
+    if(nb) { unregisterPeer(BROADCAST); }
+    return b;
 }
 
 bool Communicator::postSYN(const MACAddress& addr)

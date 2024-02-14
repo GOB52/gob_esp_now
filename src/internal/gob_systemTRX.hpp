@@ -17,6 +17,7 @@ class SystemTRX : public Transceiver
     SystemTRX();
     virtual ~SystemTRX();
 
+    bool acceptSYNRequest();
     bool postSYN(const MACAddress& addr, RUDP::config_t& cfg);
 
   protected:

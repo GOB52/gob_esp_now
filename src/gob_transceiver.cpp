@@ -146,7 +146,11 @@ bool Transceiver::post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, con
 uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     MACAddress addr(peer_addr);
-    if(addr.isBroadcast()) { LIB_LOGE("Prohibited addr %s", addr.toString().c_str()); return 0; }
+    if(addr.isBroadcast() && to_underlying(flag))
+    {
+        LIB_LOGE("Addresses not allowed as RUDP destinations %s", addr.toString().c_str());
+        return 0;
+    }
 
     // Header
     TransceiverHeader* th = (TransceiverHeader*)obuf;
