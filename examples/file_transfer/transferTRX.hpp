@@ -59,7 +59,7 @@ class TransferTRX : public TRX
     file_size_t transferedSize() const { return _progress; }
     float transferedRate() const { return (float)_progress / _size; }
     file_size_t averageSpeed() const { return _speed; }
-    uint16_t crc32() const { return _crc32; }
+    uint32_t crc32() const { return _crc32; }
 
     // For receiver 
     void setDir(const char* d) { _dir = d; } // Download dir
@@ -104,7 +104,7 @@ class TransferTRX : public TRX
     file_size_t _progress{};
     file_size_t _length{};
     file_size_t _speed{};
-    uint16_t _crc32{};
+    uint32_t _crc32{};
     uint64_t _sequence{};
 
     unsigned long _startTime{}, _endTime{};
