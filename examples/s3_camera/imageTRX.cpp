@@ -129,7 +129,7 @@ void ImageTRX::update_send()
     if(_progress >= _size)
     {
         _endTime = now;
-        M5_LOGI("Finished %lu (%f%%) <%zu>", timeRequired(), transferedRate() * 100, _speed);
+        M5_LOGD("Finished %lu (%f%%) <%zu>", timeRequired(), transferedRate() * 100, _speed);
         if(_callback) { _callback(this, _state); }
         _state = Status::None;
         return;
@@ -207,7 +207,7 @@ void ImageTRX::onReceive(const MACAddress& addr, const void* data, const uint8_t
                 {
                     M5_LOGE("Invalid data %d/%d", rcrc32 != _crc32,  _progress != _size);
                 }
-                M5_LOGI("Finished %lu (%f) <%zu> CRC:%x", timeRequired(), transferedRate() * 100, _speed, rcrc32);
+                M5_LOGD("Finished %lu (%f) <%zu> CRC:%x", timeRequired(), transferedRate() * 100, _speed, rcrc32);
             }
         }
         break;

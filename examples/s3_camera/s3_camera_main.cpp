@@ -258,7 +258,7 @@ void send_loop()
     if(M5.BtnA.isPressed()) { --jpeg_quality; }
     if(M5.BtnC.isPressed()) { ++jpeg_quality; }
     // If the quality is too high, frame2jpg will generate an error, so suppress it.
-    jpeg_quality = std::max(std::min(jpeg_quality, 80), 0); // [0...80]
+    jpeg_quality = std::max(std::min(jpeg_quality, 1000), 0); // [0...80]
 
     auto now = millis();
     if(now - tm >= 1000)
@@ -270,8 +270,8 @@ void send_loop()
     }
     lcd.setCursor(0,0);
     lcd.printf("HEAP:%u\n", esp_get_free_heap_size());
-    lcd.printf("CFPS:%u SFPS:%i\n", cfps, sfps);
-    lcd.printf("JPEG:%d", jpeg_quality);
+    lcd.printf("CFPS:%02u SFPS:%02u\n", cfps, sfps);
+    lcd.printf("JPEG:%02d", jpeg_quality);
 
     unifiedButton.draw();
 }
