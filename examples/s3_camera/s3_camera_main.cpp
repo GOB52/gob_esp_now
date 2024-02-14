@@ -257,8 +257,7 @@ void send_loop()
 
     if(M5.BtnA.isPressed()) { --jpeg_quality; }
     if(M5.BtnC.isPressed()) { ++jpeg_quality; }
-    // If the quality is too high, frame2jpg will generate an error, so suppress it.
-    jpeg_quality = std::max(std::min(jpeg_quality, 1000), 0); // [0...80]
+    jpeg_quality = std::max(std::min(jpeg_quality, 100), 0);
 
     auto now = millis();
     if(now - tm >= 1000)
