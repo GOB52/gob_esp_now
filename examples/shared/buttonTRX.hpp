@@ -5,7 +5,7 @@
 #ifndef BUTTON_TRX_HPP
 #define BUTTON_TRX_HPP
 
-#include <gob_esp_now.hpp>
+#include <gob_transceiver.hpp>
 #include <utility/Button_Class.hpp>
 
 // Receive button status and update Button_Class
