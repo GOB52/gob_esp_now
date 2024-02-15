@@ -15,7 +15,8 @@
   WARNING
   Set MAC Address string of two devices by compile option or direct description
   e.g. #define DEVICE_A "11:22:33:44:55"
- */
+  *** WARNING Either one must be CoreS3. ***
+*/
 #if !defined(DEVICE_A)
 #error Need define DEVICE_A
 #endif
@@ -33,19 +34,19 @@ constexpr uint8_t IMAGE_TRANSCEIVER_ID = 24;
 
 // Note that increasing quality increases data volume. (Transmission speed will slow down)
 #if !defined JPEG_QUALITY
-# define JPEG_QUALITY (80)
+# define JPEG_QUALITY (50)
 #endif
 int jpeg_quality = JPEG_QUALITY;
 
 MACAddress devices[] =
 {
-    MACAddress(DEVICE_C),
     MACAddress(DEVICE_A),
+    //MACAddress(DEVICE_B),
+    MACAddress(DEVICE_C),
 };
 MACAddress target;
 constexpr size_t trx_num = 1;
-ImageTRX* trx_table[trx_num];
-int current_trx = 0;
+ImageTRX imageTRX(IMAGE_TRANSCEIVER_ID);
 
 auto& lcd = M5.Display;
 goblib::UnifiedButton unifiedButton;
@@ -113,16 +114,11 @@ void trx_callback(ImageTRX* trx, const ImageTRX::Status s)
 // This callback is called in the same task as Communicator::update()
 void comm_callback(const Notify notify, const void* arg)
 {
-    mode = Failed;
     MACAddress addr;
     switch(notify)
     {
     case Notify::ConnectionLost:
-        while(decoder.isBusy()) { delay(1); }
-        addr = *(const MACAddress*)arg;
-        lcd.clear(0);
-        lcd.setCursor(0,0);
-        lcd.printf("CONNECTION LOST\n%s", addr.toString(true).c_str());
+        mode = Failed;
         break;
     default: break;
     }
@@ -156,14 +152,8 @@ void setup()
 
     auto& comm = Communicator::instance();
 
-    uint8_t idx{};
-    for(auto& trx : trx_table)
-    {
-        trx = new ImageTRX(IMAGE_TRANSCEIVER_ID + (idx++));
-        assert(trx);
-        trx->setFinishedCallback(trx_callback);
-        comm.registerTransceiver(trx);
-    }
+    imageTRX.setFinishedCallback(trx_callback);
+    comm.registerTransceiver(&imageTRX);
 
     M5_LOGI("  Self: %s", comm.address().toString().c_str());
     for(auto& addr : devices)
@@ -216,27 +206,25 @@ void send_loop()
     {
         size_t jlen{};
         uint8_t* jbuf{};
-        auto trx = trx_table[current_trx];
-        //while(trx->inProgress()) { delay(1); }
         
 #if !defined(USING_UNRELIABLE)
-        if(!trx->inProgress())
+        if(!imageTRX.inProgress())
 #endif
         {
             // RGB565 to JPEG
             // Note that increasing quality increases data volume.
             if(frame2jpg(fb, jpeg_quality, &jbuf, &jlen))
             {
-                if(trx->send(target, jbuf, jlen))
+                // trx hold the jpeg buffer if sended
+                if(imageTRX.send(target, jbuf, jlen))
                 {
-                    M5_LOGD("Send %d", current_trx);
-                    current_trx = (current_trx + 1) % trx_num;
+                    M5_LOGD("Send");
                     ++scnt;
                 }
                 else
                 {
                     free(jbuf);
-                    //M5_LOGE("skip ");
+                    M5_LOGD("skip ");
                 }
             }
             else
@@ -247,13 +235,12 @@ void send_loop()
 #if !defined(USING_UNRELIABLE)
         else
         {
-            M5_LOGD("Skip send %d", current_trx);
+            M5_LOGD("Skip");
         }
 #endif
         esp_camera_fb_return(fb);
         ++ccnt;
     }
-
 
     if(M5.BtnA.isPressed()) { --jpeg_quality; }
     if(M5.BtnC.isPressed()) { ++jpeg_quality; }
@@ -271,7 +258,6 @@ void send_loop()
     lcd.printf("HEAP:%u\n", esp_get_free_heap_size());
     lcd.printf("CFPS:%02u SFPS:%02u\n", cfps, sfps);
     lcd.printf("JPEG:%02d", jpeg_quality);
-
     unifiedButton.draw();
 }
 
@@ -280,19 +266,13 @@ void recv_loop()
     static uint32_t cnt{}, fps{};
     static unsigned long tm = millis();
 
-    // Incoming data
+    // Available queue?
     if(!imageQueue.empty())
     {
         Image img = std::move(imageQueue.front()); // queue has a unique_ptr.
         imageQueue.pop();
         ++cnt;
-
-        //int64_t v{};
-        {
-            //goblib::esp_now::profile pf(v);
-            decoder.drawJpg(img.ptr.get(), img.size); // Using Core0/1 for rendering
-        }
-        //M5_LOGI("decode:%lldms", v/1000);
+        decoder.drawJpg(img.ptr.get(), img.size); // Using Core0/1 for rendering
     }
     auto now = millis();
     if(now - tm >= 1000)
@@ -311,7 +291,7 @@ void recv_loop()
 void idle_loop()
 {
     // Receive image data?
-    if(trx_table[0]->inProgress())
+    if(imageTRX.inProgress())
     {
         decoder.setup(&lcd);
         mode = Recv;
@@ -332,13 +312,14 @@ void idle_loop()
         lcd.clear(TFT_ORANGE);
         mode = Send;
         return;
-        //        
     }
     unifiedButton.draw();
 }
 
 void loop()
 {
+    static bool failed{};
+
     M5.update();
     unifiedButton.update();
 
@@ -351,7 +332,16 @@ void loop()
     {
     case Send: send_loop(); break;
     case Recv: recv_loop(); break;
-    case Failed: break;
+    case Failed:
+        if(!failed)
+        {
+            while(decoder.isBusy()) { delay(1); }
+            lcd.clear(0);
+            lcd.setCursor(0,0);
+            lcd.printf("CONNECTION LOST\n%s", target.toString(true).c_str());
+            failed = true;
+        }
+        break;
     default:   idle_loop(); break;
     }
 }
