@@ -1,23 +1,17 @@
 /*!
-  @file gob_esp_now_definition.hpp
-  @brief Common definitions for libraries
+  @file gob_esp_now_utility.hpp
+  @brief Utilities for gob_esp_now
 
   @copyright 2023 GOB
   @copyright Licensed under the MIT license. See LICENSE file in the project root for full license information.
 */
-#ifndef GOBLIB_ESP_NOW_DEFINITION_HPP
-#define GOBLIB_ESP_NOW_DEFINITION_HPP
+#ifndef GOBLIB_ESP_NOW_UTILITY_HPP
+#define GOBLIB_ESP_NOW_UTILITY_HPP
 
 #include <cstdint>
 #include <type_traits>
 #include <FreeRTOS/freeRTOS.h>
 #include <FreeRTOS/semphr.h>
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-# pragma messgae "Using std::map"
-# include <map>
-#else
-#include "internal/gob_esp_now_vmap.hpp"
-#endif
 #if !defined(NDEBUG)
 #include <esp_timer.h>
 #endif
@@ -26,14 +20,6 @@
 namespace goblib { namespace esp_now {
 
 constexpr char LIB_TAG[] = "GEN";
-
-// Use std::map for map class or own class?
-// Note that std::map consumes a lot of memory.
-#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
-    template<typename K, typename T> using map_t = std::map<K,T>;
-#else
-    template<typename K, typename T> using map_t = goblib::esp_now::vmap<K,T>;
-#endif
 
 // Porting std::to_underlying (C++23)
 template<typename E> constexpr inline typename std::underlying_type<E>::type to_underlying(const E& e) noexcept

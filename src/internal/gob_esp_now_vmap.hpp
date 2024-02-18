@@ -6,11 +6,19 @@
 #ifndef GOB_ESP_NOW_VMAP_HPP
 #define GOB_ESP_NOW_VMAP_HPP
 
-#include <vector>
-#include <algorithm>
+// Use std::map for map class or own class?
+// Note that std::map consumes a lot of memory.
+#if defined(GOBLIB_ESP_NOW_USING_STD_MAP)
+# pragma messgae "Using std::map"
+# include <map>
+namespace goblib { namespace esp_now {
+template<typename K, typename T> using map_t = std::map<K,T>;
+}}
+#else
+# include <vector>
+# include <algorithm>
 
 namespace goblib { namespace esp_now {
-
 /*!
   @class vmap
   @brief std::map-like map class implemented with std::vector
@@ -48,6 +56,8 @@ template <typename Key, typename T> class vmap
         if (it != _v.cend() && it->first == key) { return it->second; }
         else
         {
+// Compiling a C++ source file with exceptions enabled? (GCC macro)
+// See also https://gcc.gnu.org/onlinedocs/cpp/Common-Predefined-Macros.html
 #if defined(__EXCEPTIONS)
         throw std::out_of_range("vmap.at");
 #else
@@ -147,6 +157,11 @@ template <typename Key, typename T> class vmap
 
     container_type _v;
 };
+
+template<typename K, typename T> using map_t = vmap<K,T>;
 //
 }}
+
+
+#endif
 #endif

@@ -5,7 +5,7 @@
   @copyright 2023 GOB
   @copyright Licensed under the MIT license. See LICENSE file in the project root for full license information.
 */
-#include "gob_esp_now_definition.hpp"
+#include "gob_esp_now_utility.hpp"
 #include <cstdarg>
 
 namespace goblib { namespace esp_now {

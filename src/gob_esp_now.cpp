@@ -155,7 +155,8 @@ bool remove_not_need_resend(std::vector<uint8_t>& packet)
     {
         auto th = (TransceiverHeader*)p;
         // unreliable or only ACK with no payload
-        if(!th->isRUDP() ||  (th->onlyACK() && !th->hasPayload()) )
+        //        if(!th->isRUDP() || (th->onlyACK() && !th->hasPayload())
+        if(!th->isACK() || (th->onlyACK() && !th->hasPayload()) )
         {
             --ch->count;
             ch->size -= th->size;
@@ -167,7 +168,7 @@ bool remove_not_need_resend(std::vector<uint8_t>& packet)
         }
         p += th->size;
     }
-    if(ch->count == 0) { packet.clear(); }
+    if(ch->count == 0) { ch->size = 0; packet.clear(); }
     //LIB_LOGD("CH1:%u:%u", ch->count, ch->size);
     return !packet.empty();
 }
@@ -295,14 +296,7 @@ void Communicator::update()
         // second : packet
         for(auto& q : _queue)
         {
-            // BROADCAST ......... _state[]虫でよい かつonSent前に clear queue!
-            // 
-
-            //remove_acked(q.first, q.second);
-            
-
             if(q.second.empty() || !_state.count(q.first)) { continue; }
-
             // Send / resend
             if(_state[q.first].state == State::None ||
                (/*_state[q.first].state != State::None &&*/
@@ -321,7 +315,7 @@ void Communicator::update()
                 if(!sent) { continue; }
                 if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
                 else { ++_state[q.first].retry; }
-#if 0
+#if 1
                 // Wait called callback_onSent
                 xSemaphoreGiveRecursive(_sem);
                 xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
@@ -337,8 +331,8 @@ void Communicator::update()
             }
         }
     }
-#if 1
-    // Wait onSent
+#if 0
+    // Wait called callback_onSent
     if(sent)
     {
         xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
@@ -351,11 +345,11 @@ void Communicator::update()
     
     lock_guard _(_sem);
     // Detect communication failures and heartbeat
-    if(_transceivers.size() < 2 || !_config.nullSegmentTimeout) { return; }
+    if(!_config.nullSegmentTimeout) { return; }
 
     for(auto& ss : _state)
     {
-        if(!ss.first) { continue; }
+        //if(!ss.first) { continue; }
         // Send a NUL if I am the client when a null timeout occurs
         if(isSecondary()
            && (_queue.count(ss.first) && _queue.at(ss.first).empty())
@@ -408,7 +402,7 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     ch->size = packet.size();
     
     reset_sent_state(addr);
-    //LIB_LOGD("CH:%u:%u:%zu", ch->count, ch->size,md.size());
+    //LIB_LOGD("CH:%u:%u", ch->count, ch->size);
     return true;
 }
 
@@ -553,6 +547,7 @@ void Communicator::notify(const Notify n, const void* arg)
         LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
         unregisterPeer(*paddr);
         break;
+    case Notify::Shookhands: break;
     default:
         LIB_LOGE("%s", "UNKNOWN");
         break;
@@ -685,6 +680,17 @@ bool Communicator::existsPeer(const MACAddress& addr)
     return esp_now_is_peer_exist(addr.data());
 }
 
+const std::vector<MACAddress> Communicator::getPeerAddresses() const
+{
+    std::vector<MACAddress> v;
+    esp_now_peer_info_t info{};
+    if(esp_now_fetch_peer(true, &info) == ESP_OK)
+    {
+        do { v.emplace_back(info.peer_addr); }while(esp_now_fetch_peer(false, &info) == ESP_OK);
+    }
+    return v;
+}
+
 void Communicator::callback_onSent(const uint8_t *peer_addr, esp_now_send_status_t status)
 {
     MACAddress addr(peer_addr);
@@ -700,7 +706,7 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     {
         lock_guard _(_sem);
         // Composite the remaining elements and those added to the queue between esp_send and the callback
-        if(succeed)
+        //if(succeed)
         {
             remove_not_need_resend(_lastSentQueue);
         }
@@ -721,23 +727,43 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
 
 void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* data, int length)
 {
+    auto& comm = instance();
+
+    auto ch = (const CommunicatorHeader*)data;
+    if(ch->signeture != CommunicatorHeader::SIGNETURE
+       || ch->app_id != comm._app_id) { LIB_LOGE("Illegal data"); return; }
+
     MACAddress addr(peer_addr);
-    if(esp_now_is_peer_exist(peer_addr))
+    if(esp_now_is_peer_exist(peer_addr)) { comm.onReceive(addr, data, length); }
+    // Data probably from broadcast communication (no peers registered yet)
+    else                                 { comm.onReceiveNotRegistered(addr, data, length); }
+}
+
+void Communicator::onReceiveNotRegistered(const MACAddress& addr, const uint8_t* data, const uint8_t length)
+{
+    // Data probably from broadcast communication (no peers registered yet)
+    // Pass to system transceiver
+    auto ch = (const CommunicatorHeader*)data;
+    auto cnt = ch->count;
+    data += sizeof(CommunicatorHeader);
+    while(cnt--)
     {
-        instance().onReceive(addr, data, length);
-    }
-    else
-    {
-        LIB_LOGE("%s", addr.toString().c_str());
+        auto th = (const TransceiverHeader*)data;
+        if(th->tid == 0) // system?
+        {
+            _transceivers[0]->on_receive(addr, th); // [0] is sysTRX
+        }
+        else
+        {
+            LIB_LOGW("Reject data from unregistered peers %s:%u", addr.toString().c_str(), th->tid);
+        }
+        data += th->size;
     }
 }
 
 void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)
 {
     auto ch = (const CommunicatorHeader*)data;
-    // Check 
-    if(ch->signeture != CommunicatorHeader::SIGNETURE
-       || ch->app_id != _app_id) { LIB_LOGE("Illegal data"); return; }
 
 #if 0
 #if !defined(NDEBUG)
@@ -796,19 +822,20 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     }
 }
 
-bool Communicator::acceptRequest()
+void Communicator::acceptSYN(const bool enable)
 {
-    bool nb{};
-    if(!existsPeer(BROADCAST))
-    {
-        nb = true;
-        registerPeer(BROADCAST);
-    }
+    lock_guard _(_sem);
 
-    bool b = _sysTRX->acceptSYNRequest();
+    _enableSYN = enable;
+    _sysTRX->acceptSYN(enable);
+}
 
-    if(nb) { unregisterPeer(BROADCAST); }
-    return b;
+bool Communicator::broadcastAllowConnection()
+{
+    if(isDenySYN()) { LIB_LOGE("SYN response denied"); return false; }
+
+    if(!existsPeer(BROADCAST)) { registerPeer(BROADCAST); }
+    return _sysTRX->broadcastAllowConnection();
 }
 
 bool Communicator::postSYN(const MACAddress& addr)

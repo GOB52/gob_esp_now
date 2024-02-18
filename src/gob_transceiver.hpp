@@ -9,9 +9,10 @@
 #ifndef GOBLIB_TRANSCEIVER_HPP
 #define GOBLIB_TRANSCEIVER_HPP
 
-#include "internal/gob_esp_now_definition.hpp"
 #include "gob_rudp.hpp"
 #include "gob_mac_address.hpp"
+#include "internal/gob_esp_now_utility.hpp"
+#include "internal/gob_esp_now_vmap.hpp"
 
 namespace goblib { namespace esp_now {
 
@@ -31,8 +32,10 @@ struct TransceiverHeader
     ///@name Properties
     ///@{
     inline bool isRUDP() const       { return (bool)rudp.flag; } //!< @brief is RUDP data?
-    inline bool isSYN() const        { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN?
-    inline bool isSYN_ACK() const    { return (rudp.flag == to_underlying(RUDP::Flag::SYN_ACK)); } //!< @brief is SYN?
+        inline bool isSYN() const        { return (rudp.flag & to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN ?
+        inline bool onlySYN() const      { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief only SYN?
+    //inline bool isSYN() const        { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN ?
+
     inline bool isRST() const        { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
     inline bool isACK() const        { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
     inline bool onlyACK() const      { return (rudp.flag == to_underlying(RUDP::Flag::ACK)); } //!< @brief only ACK?
@@ -186,6 +189,14 @@ class Transceiver
         lock_guard lock(_sem);
         return func(std::forward<Args>(args)...);
     }
+
+    template<typename Func, typename... Args> auto with_lock(Func func, Args&&... args) const
+            -> decltype(func(std::forward<Args>(args)...))
+    {
+        lock_guard lock(_sem);
+        return func(std::forward<Args>(args)...);
+    }
+
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features
@@ -215,13 +226,13 @@ class Transceiver
     virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length) {}
     
     void build_peer_map();
-    bool post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, const void* data = nullptr, const uint8_t length = 0);
-    inline bool post_ack(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::ACK); }
+    bool post_rudp(uint64_t& seq, const uint8_t* peer_addr, const RUDP::Flag flag, const void* data = nullptr, const uint8_t length = 0);
+    inline bool post_ack(const uint8_t* peer_addr) { uint64_t seq{}; return post_rudp(seq, peer_addr, RUDP::Flag::ACK) != 0; }
     inline bool post_ack(const MACAddress& addr)   { return post_ack(static_cast<const uint8_t*>(addr)); }
-    inline bool post_nul(const uint8_t* peer_addr) { return post_rudp(peer_addr, RUDP::Flag::NUL); }
+    inline bool post_nul(const uint8_t* peer_addr) { uint64_t seq{}; return post_rudp(seq, peer_addr, RUDP::Flag::NUL) != 0; }
     inline bool post_nul(const MACAddress& addr)   { return post_nul(static_cast<const uint8_t*>(addr)); }
     
-    uint64_t make_data(uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
+    bool make_data(uint64_t& seq, uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
     inline bool delivered(const uint8_t seq, const MACAddress& addr)
     {

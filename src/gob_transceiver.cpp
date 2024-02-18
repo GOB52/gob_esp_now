@@ -60,7 +60,8 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
     // Unicast
     if(peer_addr)
     {
-        auto seq = make_data(buf, RUDP::Flag::ACK, peer_addr, data, length);
+        uint64_t seq{};
+        make_data(seq, buf, RUDP::Flag::ACK, peer_addr, data, length);
         return Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf)) ? seq : 0;
     }
     //All peers (Separate to each peer)
@@ -70,8 +71,10 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
     uint64_t rseq{};
     do
     {
-
-        auto seq = make_data(buf, RUDP::Flag::ACK, info.peer_addr, data, length);
+        if(MACAddress(info.peer_addr).isMulticast()) { continue; }
+        
+        uint64_t seq{};
+        make_data(seq, buf, RUDP::Flag::ACK, info.peer_addr, data, length);
         if(!Communicator::instance().postWithLock(info.peer_addr, buf, sizeof(buf)))
         {
             LIB_LOGE("Failed to post %s", MACAddress(info.peer_addr).toString().c_str());
@@ -102,10 +105,11 @@ uint64_t Transceiver::sendReliable(const uint8_t* peer_addr, const void* data, c
 
 bool Transceiver::postUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { return false; }
+    if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { LIB_LOGW("Not exists");  return false; }
     uint8_t buf[sizeof(TransceiverHeader) + length]{};
-    make_data(buf, RUDP::Flag::NONE, peer_addr, data, length);
-    return Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf));
+    uint64_t seq{};
+    return make_data(seq, buf, RUDP::Flag::NONE, peer_addr, data, length) && 
+            Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf));
 }
 
 #if 0
@@ -132,24 +136,24 @@ void Transceiver::build_peer_map()
 }
 
 // WARN:Will lock
-bool Transceiver::post_rudp(const uint8_t* peer_addr, const RUDP::Flag flag, const void* data, const uint8_t length)
+bool Transceiver::post_rudp(uint64_t& seq, const uint8_t* peer_addr, const RUDP::Flag flag, const void* data, const uint8_t length)
 {
     if(!peer_addr) { LIB_LOGE("Need peer_addr"); return false; }
     LIB_LOGD("[RUDP]:[%s]:0x%02x", MACAddress(peer_addr).toString().c_str(), to_underlying(flag));
 
     uint8_t buf[sizeof(TransceiverHeader) + length];
-    make_data(buf, flag, peer_addr, data, length);
-    return Communicator::instance().post(peer_addr, buf, sizeof(buf));
+    return make_data(seq,  buf, flag, peer_addr, data, length) &&
+            Communicator::instance().post(peer_addr, buf, sizeof(buf));
 }
 
 // WARN:Will lock
-uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
+bool Transceiver::make_data(uint64_t& seq, uint8_t* obuf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     MACAddress addr(peer_addr);
     if(addr.isBroadcast() && to_underlying(flag))
     {
         LIB_LOGE("Addresses not allowed as RUDP destinations %s", addr.toString().c_str());
-        return 0;
+        return false;
     }
 
     // Header
@@ -158,12 +162,16 @@ uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
     th->size = sizeof(*th) + length;
     th->rudp.flag = to_underlying(flag);
 
-    uint64_t seq{};
+    seq = 0;
     auto& pi = _peerInfo[addr];
     {
         lock_guard _(_sem);
         pi.needReturnACK = false;
 
+        // TODO: Should I think about how to deal with it or just accept it as a specification?
+        // Because the sequence is increased before post,
+        // if post fails after this, the sequence will be skipped.
+        // Is recovery really necessary?
         if(th->isNUL())
         {
             seq = ++pi.sequence;
@@ -173,9 +181,6 @@ uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
         }
         else if(th->isACK())
         {
-            // TODO: ここで ++pi.sequnce して post で overflow するとやばい気がする
-            // post error の場合 sequence とばないか?
-            // そのばあいそもそも破綻するのだからいいのでは説
             seq = length ? ++pi.sequence : ++pi.ackSequence;
             th->rudp.sequence = seq & 0xFF;
             pi.sentAck = pi.recvSeq;
@@ -189,7 +194,7 @@ uint64_t Transceiver::make_data(uint8_t* obuf, const RUDP::Flag flag, const uint
              (uint8_t)flag, th->rudp.sequence, th->rudp.ack, th->payloadSize(),
              seq, pi.recvSeq);
 
-    return seq;
+    return th->isACK() ? seq != 0 : true;
 }
 
 void Transceiver::_update(const unsigned long ms, const RUDP::config_t& cfg)

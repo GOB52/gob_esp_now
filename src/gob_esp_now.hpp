@@ -15,10 +15,11 @@
 #define GOBLIB_ESP_NOW_HPP
 
 #include <esp_now.h>
-#include "internal/gob_esp_now_definition.hpp"
 #include "gob_mac_address.hpp"
 #include "gob_rudp.hpp"
 #include "gob_transceiver.hpp"
+#include "gob_esp_now_enum.hpp"
+#include "internal/gob_esp_now_utility.hpp"
 
 /*!
   @namespace goblib
@@ -31,34 +32,6 @@ namespace goblib {
   @brief For ESP-NOW
  */
 namespace esp_now {
-
-/*!
-  @enum Role
-  @brief Role of communicator
-*/
-enum class Role : uint8_t
-{
-    None,      //!< @brief No role
-    Primary,   //!< @brief Primary. Also known as master, controller(ESP-NOW Terminology)
-    Secondary, //!< @brief Secondary. Also known as slave
-};
-
-/*!
-  @enum Notify
-  @brief Notify type
-  notify and argument  Correspondence Chart for notify(), onNotify()
-  | Notify | Argument |
-  | --- | --- |
-  | Disconnect | const MACAddress* |
-  | ConnectionLost | const MACAddress* |
-  | Shookhands | const MACAddress* |  
-*/
-enum class Notify : uint8_t
-{
-    Disconnect,     //!< @brief Actively disconnected
-    ConnectionLost, //!< @brief Connection lost
-    Shookhands,     //!< @brief Completed the 3-way handshake
-};
 
 /*!
   @struct CommunicatorHeader
@@ -100,15 +73,19 @@ class Communicator
     inline const MACAddress& address() const  { return _addr; } //!< @brief Gets the self address
     inline const MACAddress& primaryAddress() const  { return _primaryAddr; } //!< @brief Gets the primary address if exists
     inline unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
-    inline Role role() const        { return _role; } //!< @brief Gets the role type
-    inline bool isPrimary() const   { return _role == Role::Primary; } //!< @brief Is role primary?
-    inline bool isSecondary() const { return _role == Role::Secondary; } //<! @brief Is role secondary?
-    inline bool isNoRole() const   { return _role == Role::None; } //!< @brief No role?
     inline RUDP::config_t config() const { return _config; } //!< @brief Gets the RUDP configuretion
     ///@}
 
-    //! @brief Set role
-    void setRole(const Role r) { _role = r; if(r == Role::Primary) { _primaryAddr = _addr; } }
+    ///@name Role
+    ///@{
+    void setRole(const Role r) { _role = r; if(r == Role::Primary) { _primaryAddr = _addr; } } //!< @brief Set role
+    inline Role role() const        { return _role; } //!< @brief Gets the role type
+    inline bool isPrimary() const   { return _role == Role::Primary; } //!< @brief Is role primary?
+    inline bool isSecondary() const { return _role == Role::Secondary; } //<! @brief Is role secondary?
+    inline bool isHybrid() const { return _role == Role::Hybrid; } //<! @brief Is role hybrid?
+    inline bool isNoRole() const   { return _role == Role::None; } //!< @brief No role?
+    inline bool isAnyRole() const  { return !isNoRole(); } //!< @breif is any role?
+    ///@}
     
     /*!
       @brief Begin communication
@@ -150,6 +127,7 @@ class Communicator
     void clearPeer();
     uint8_t numOfPeer(); //!< @brief Number of registered peers
     bool existsPeer(const MACAddress& addr); //!< @brief Exists peer?
+    const std::vector<MACAddress> getPeerAddresses() const; //!< @brief Gets the addresses of registered unicast peer
     ///@}
     
     /*!
@@ -208,7 +186,10 @@ class Communicator
 
     ///@name Handshake
     ///@{
-    bool acceptRequest(); //!< @brief Accept SYN requests (broadcasting)
+    inline bool isAllowSYN() const { return _enableSYN; } //!< @brief Is allowed SYN response?
+    inline bool isDenySYN() const { return !isAllowSYN(); } //!< @brief Is denied SYN response?
+    inline void acceptSYN(const bool enable); //!< @brief Allow/deny SYN request response
+    bool broadcastAllowConnection();
     bool postSYN(const MACAddress& addr); //!< @brief Post SYN request
     ///@}
     
@@ -253,6 +234,7 @@ class Communicator
     void onSent(const MACAddress& addr, const esp_now_send_status_t status);
     static void callback_onReceive(const uint8_t *mac_addr, const uint8_t* data, int length);
     void onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length);
+    void onReceiveNotRegistered(const MACAddress& addr, const uint8_t* data, const uint8_t length);
     ///@}
 
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
@@ -267,13 +249,15 @@ class Communicator
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
     Role _role{Role::None};
+    bool _enableSYN{true};
+    uint8_t _peerMax{}; // 0 means as much as memory and ESP-NOW will allow
     
     MACAddress _addr{}; // Self address
     MACAddress _primaryAddr{};
     RUDP::config_t _config{};
 
     SystemTRX* _sysTRX{}; // System transceiver
-    std::vector<Transceiver*> _transceivers; // User transceivers
+    std::vector<Transceiver*> _transceivers; // transceivers, [0] is _sysTRX
 
     unsigned long _lastSentTime{};
     MACAddress _lastSentAddr{};
