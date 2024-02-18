@@ -93,7 +93,7 @@ const char* files[] =
     "dummy_10M.txt",     // 10485760
 };
 int file_index{};
-uint16_t recv_crc{};
+uint32_t file_crc{};
 
 TransferTRX::Status  old_state{TransferTRX::Status::None};
 bool failed{}, dirty{};
@@ -271,7 +271,7 @@ void loop()
         switch(cur_state)
         {
         case TransferTRX::Status::Recv:
-            recv_crc = 0;
+            file_crc = 0;
             transfer.bus_lock([]()
             {
                 lcd.startWrite();
@@ -297,8 +297,8 @@ void loop()
         {
             transfer.bus_lock([]()
             {
-                recv_crc = calculateCRC32(transfer.path());
-                M5_LOGI("Recv crc:[%s] %x", transfer.path(), recv_crc);
+                file_crc = calculateCRC32(transfer.path());
+                M5_LOGI("Recv crc:[%s] %x", transfer.path(), file_crc);
             });
             dirty = true;
         }
