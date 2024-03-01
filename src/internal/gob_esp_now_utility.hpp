@@ -12,14 +12,12 @@
 #include <type_traits>
 #include <FreeRTOS/freeRTOS.h>
 #include <FreeRTOS/semphr.h>
+#include <Wstring.h>
 #if !defined(NDEBUG)
 #include <esp_timer.h>
 #endif
-#include <Wstring.h>
 
 namespace goblib { namespace esp_now {
-
-constexpr char LIB_TAG[] = "GEN";
 
 // Porting std::to_underlying (C++23)
 template<typename E> constexpr inline typename std::underlying_type<E>::type to_underlying(const E& e) noexcept
@@ -58,6 +56,7 @@ String formatString(const char* fmt, ...);
 
 #if !defined(NDEBUG)
 // Simple Profiler for debug
+// Scoped profiling
 class profile
 {
   public:

@@ -107,7 +107,7 @@ class Transceiver
     //! @brief Post to all peer
     inline uint64_t postReliable(                   const void* data, const uint8_t length) { return postReliable(nullptr, data, length); }
     //! @brief Post to destination
-    template<typename T> inline uint64_t postReliable(const MACAddress& addr, const T& data) { return postReliable(addr.data(), &data ,sizeof(data)); }
+    template<typename T> inline uint64_t postReliable(const MACAddress& addr, const T& data) { return postReliable(addr.peer_addr(), &data ,sizeof(data)); }
     //! @brief Post to all peer
     template<typename T> inline uint64_t postReliable(                        const T& data) { return postReliable(nullptr,     &data ,sizeof(data)); }
 
@@ -244,14 +244,14 @@ class Transceiver
         // ACK with payload
         uint64_t sequence{};  // S
         uint64_t recvSeq{};   // R (Sequence number received from the peer)
-        uint64_t recvAck{};   // R (ACK number received from the peer)
-        uint64_t sentAck{};   // Last ACK sent
+        uint64_t recvAck{};   // R (ACKed number received from the peer)
+        uint64_t sentAck{};   // S Last sent ACKed number
         // no payload
         uint64_t ackSequence{}; // S
-        uint64_t recvAckSeq{}; // R
+        uint64_t recvAckSeq{};  // R
         //
         unsigned long recvTime{}; // R
-        bool needReturnACK{}; // R
+        bool needReturnACK{};     // R
     } __attribute__((__packed__));
 
     // If derived, call the parent on_receive first!

@@ -6,7 +6,9 @@
 #define BUTTON_TRX_HPP
 
 #include <gob_transceiver.hpp>
-#include <utility/Button_Class.hpp>
+#include <utility/Button_Class.hpp> // M5Unified
+#include "internal/gob_esp_now_log.hpp"
+
 
 // Receive button status and update Button_Class
 class ButtonTRX : public goblib::esp_now::Transceiver
@@ -27,7 +29,7 @@ class ButtonTRX : public goblib::esp_now::Transceiver
             uint8_t btnB : 1;
             uint8_t btnC : 1;
         };
-    };
+    } __attribute__((__packed__));
 
     struct  Button
     {
@@ -35,28 +37,33 @@ class ButtonTRX : public goblib::esp_now::Transceiver
         std::array<Button_Class, 3> buttons;
     };
     
-    explicit ButtonTRX(const uint8_t tid) : goblib::esp_now::Transceiver(tid) { _time = millis(); }
+    explicit ButtonTRX(const uint8_t tid) : goblib::esp_now::Transceiver(tid) {}
     virtual ~ButtonTRX() {}
 
     inline bool enabled() const { return _enable; }
     inline const Button_Class& BtnA(const MACAddress& addr) { return _button[addr].buttons[0]; }
     inline const Button_Class& BtnB(const MACAddress& addr) { return _button[addr].buttons[1]; }
     inline const Button_Class& BtnC(const MACAddress& addr) { return _button[addr].buttons[2]; }
+    inline uint8_t raw(const MACAddress& addr) const
+    {
+        return _button.count(addr) ? _button.at(addr).bbit.btn : 0;
+    }
 
-    void begin() { _enable = true; _sequence = 0; }
-    bool postReliable(const MACAddress& addr, bool a, bool b, bool c)
+    void begin() { with_lock([this]() { this->_enable = true; this->_sequence = 0; }); }
+
+    using goblib::esp_now::Transceiver::postReliable;
+    bool postReliable(const MACAddress& addr, const bool a, const bool b, const bool c)
     {
         if(with_lock([this](){ return _enable; }))
         {
             ButtonBit bb(a, b, c);
-            _sequence = goblib::esp_now::Transceiver::postReliable(addr, bb);
-            return _sequence != 0;
+            _sequence = postReliable(addr, bb);
+            return (_sequence != 0ULL);
         }
         return false;
     }
-    
+
   protected:
-    // Called with exclusive control
     virtual void update(const unsigned long ms) override
     {
         // first:MACAddress, second:struct Button
@@ -75,10 +82,13 @@ class ButtonTRX : public goblib::esp_now::Transceiver
     {
         if(!_enable)
         {
+            LIB_LOGD("Enabled cause by ither device");
             _enable = true;
+#if 0
             // Only ACK is sent in the beginning.
             // After that, postReliable also serves as ACK. (ACK with payload)
             //post_ack(addr);
+#endif
         }
         assert(length == sizeof(ButtonBit));
         _button[addr].bbit = *(const ButtonBit*)data;
@@ -87,7 +97,6 @@ class ButtonTRX : public goblib::esp_now::Transceiver
   private:
     map_t<MACAddress, Button> _button;
     uint64_t _sequence{}; // posted sequence
-    unsigned long _time{};
     bool _enable{};
 };
 

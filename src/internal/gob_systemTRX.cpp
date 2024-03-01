@@ -16,16 +16,9 @@ namespace
 struct Payload
 {
     static constexpr uint32_t MAGIC_NO = 0x5F25AD0C;
-
     uint32_t  magicNo{ MAGIC_NO };
     enum Function : uint8_t { AllowConnection = 1, };
     uint8_t function{};
-#if 0
-    // Extra data
-    union
-    {
-    };
-#endif
 } __attribute__((__packed__));
 //
 }
@@ -40,7 +33,32 @@ SystemTRX:: ~SystemTRX()
 {
 }
 
-bool SystemTRX::broadcastAllowConnection()
+void SystemTRX::enableHandshake(const bool enable)
+{
+    with_lock([this, &enable]()
+    {
+        _enableHandshake = enable;
+        if(!enable)
+        {
+            for(auto& si : _synInfo) { si.second.status = SynInfo::State::None; }
+        }
+    });
+}
+
+void SystemTRX::setMaxHandshakePeer(const uint8_t num)
+{
+    with_lock([this, &num]()
+    {
+        if(num && num < _handshaked)
+        {
+            LIB_LOGE("Failed already handshaked %u/%u", _handshaked, num);
+            return;
+        }
+        _maxPeer = num;
+    });
+}
+
+bool SystemTRX::broadcastHandshake()
 {
     Payload pl;
     pl.function = Payload::Function::AllowConnection;
@@ -68,7 +86,7 @@ void SystemTRX::update(const unsigned long ms)
         switch(it->second.status)
         {
         case SynInfo::State::None: break;
-            // P
+            // Primary side
         case SynInfo::State::PostSYNACK:
             LIB_LOGD("Post SYNACK");
             if(post_rudp(seq, it->first.data(), RUDP::Flag::SYN_ACK, &cfg, sizeof(cfg)))
@@ -96,7 +114,7 @@ void SystemTRX::update(const unsigned long ms)
                 it->second.status = SynInfo::State::None;
             }
             break;
-            // S
+            // Secondary side
         case SynInfo::State::PostSYN:
             LIB_LOGD("Post SYN");
             if(post_rudp(seq, it->first.data(), RUDP::Flag::SYN, &cfg, sizeof(cfg)))
@@ -119,6 +137,13 @@ void SystemTRX::update(const unsigned long ms)
             }
             break;
         case SynInfo::State::PostACK:
+            // Already posted force by parent class?
+            if(it->second.recvSeqSynAck && _peerInfo[it->first].sentAck >= it->second.recvSeqSynAck)
+            {
+                LIB_LOGE("Already posted ACK");
+                it->second.status = SynInfo::State::Shookhand;
+                break;
+            }
             LIB_LOGD("Post ACK");
             if(post_ack(it->first)) { it->second.status = SynInfo::State::Shookhand; }
             else { LIB_LOGE("Failed to postACK"); }
@@ -128,6 +153,7 @@ void SystemTRX::update(const unsigned long ms)
             LIB_LOGE("Shookhand %s", it->first.toString().c_str());
             comm.notify(Notify::Shookhands, &it->first);
             it->second.status = SynInfo::State::None;
+            ++_handshaked;
             break;
         }
         it = (it->second.status == SynInfo::State::None) ? _synInfo.erase(it) : std::next(it);
@@ -139,6 +165,8 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
 {
     Transceiver::on_receive(addr, th);
 
+    if(!_enableHandshake) { return; }
+    
     auto& comm = Communicator::instance();
     //LIB_LOGW("RECV:0X%02x", th->rudp.flag);
     
@@ -152,7 +180,7 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
             return;
         }
 
-        // Receive allow connection? (Secondary side)
+        // Receive handshake broadcast? (Secondary side)
         if(pl->function == Payload::Function::AllowConnection)
         {
             if(comm.existsPeer(addr))
@@ -160,10 +188,17 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
                 LIB_LOGW("Already registered %s", addr.toString().c_str());
                 return;
             }
-            LIB_LOGE("Receive allowConnection %s", addr.toString().c_str());
+            LIB_LOGE("Receive Handshake %s", addr.toString().c_str());
             auto& comm = Communicator::instance();
-            comm.registerPeer(addr);
-            _synInfo[addr].status = SynInfo::State::PostSYN;
+            if(comm.registerPeer(addr))
+            {
+                _synInfo[addr].status = SynInfo::State::PostSYN;
+            }
+            else
+            {
+                LIB_LOGE("Failed to register peer %s %u/%u", addr.toString().c_str(), _handshaked, _maxPeer);
+                _synInfo[addr].status = SynInfo::State::None;
+            }
             return;
         }
     }
@@ -173,36 +208,46 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
         auto& comm = Communicator::instance();
         if(th->isSYN())
         {
-            // Receive SYN (Primary side)
-            if(!th->isACK() && _enableSYN)
+            // Primary side
+            // Receive SYN
+            if(!th->isACK())
             {
                 LIB_LOGE("Recv SYN");
-                if(comm.existsPeer(addr) || comm.isSecondary() || (_peerMax && comm.numOfPeer() >= _peerMax))
+                if(comm.existsPeer(addr) || comm.isSecondary() || (_maxPeer && _handshaked >= _maxPeer))
                 {
                     LIB_LOGE("Reject SYN request %d:%d:%u/%u",
-                             comm.existsPeer(addr), comm.isSecondary(), comm.numOfPeer(), _peerMax);
+                             comm.existsPeer(addr), comm.isSecondary(), _handshaked, _maxPeer);
                     return;
                 }
                 comm.setRole(Role::Primary);
-                Communicator::instance().registerPeer(addr);
-                _synInfo[addr].status = SynInfo::State::PostSYNACK;
-                return;
+                if(Communicator::instance().registerPeer(addr))
+                {
+                    _synInfo[addr].status = SynInfo::State::PostSYNACK;
+                }
+                else
+                {
+                    LIB_LOGE("Failed to register peer %s %u/%u", addr.toString().c_str(), _handshaked, _maxPeer);
+                    _synInfo[addr].status = SynInfo::State::None;
+                }
             }
-            // Receive SYN+ACK and apply config (Secondary side)
+            // Secondary side
+            // Receive SYN+ACK and apply config
             else
             {
                 LIB_LOGE("Recv SYNACK");
-                if(comm.isPrimary())
+                if(_synInfo[addr].status != SynInfo::State::WaitSYNACK || !comm.isNoRole())
                 {
-                    LIB_LOGE("Reject SYNACK");
+                    LIB_LOGE("Reject SYNACK %d", _synInfo[addr].status);
                     _synInfo[addr].status = SynInfo::State::None;
                     return;
                 }
-
+                _synInfo[addr].recvSeqSynAck = _peerInfo[addr].recvSeq;
+                
                 // TODO sequence.ack,ackseq....
                 comm.setRole(Role::Secondary);
                 const RUDP::config_t* cfg = (const RUDP::config_t*)th->payload();
                 comm._config = *cfg;
+                comm._primaryAddr = addr;
                 _synInfo[addr].status = SynInfo::State::PostACK;
             }
         }
@@ -213,14 +258,15 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
 String SystemTRX::debugInfo() const
 {
     String s = Transceiver::debugInfo() + '\n';
+    s += formatString("  sysTRX %d: %u/%u\n", _enableHandshake, _handshaked, _maxPeer);
     with_lock([this, &s]()
     {
         s += formatString("  SynInfo:%zu\n", this->_synInfo.size());
         for(auto& si : this->_synInfo)
         {
-            s += formatString("    [%s]:%u:%lu:%llu",
+            s += formatString("    [%s]:%u:%lu:%llu:%llu",
                               si.first.toString().c_str(),
-                              si.second.status, si.second.tm, si.second.sequence);
+                              si.second.status, si.second.tm, si.second.sequence, si.second.recvSeqSynAck);
         }
     });
     s.trim();

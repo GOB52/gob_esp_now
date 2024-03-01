@@ -30,8 +30,10 @@ constexpr uint8_t BUTTON_TRANSCEIVER_ID = 1;
 
 MACAddress devices[] =
 {
-    MACAddress(DEVICE_A),
+    //    MACAddress(DEVICE_A),
     MACAddress(DEVICE_B),
+    MACAddress(DEVICE_C),
+    
 };
 MACAddress target;
 ButtonTRX  buttonTRX(BUTTON_TRANSCEIVER_ID);
@@ -53,6 +55,17 @@ const char* bstr(const m5::Button_Class::button_state_t s)
     return button_state_string[(uint8_t)s];
 }
 #endif
+void comm_task(void*)
+{
+    auto& comm = Communicator::instance();
+    for(;;)
+    {
+        comm.update();
+        delay(1);
+    }
+    // NOT REACHED
+    //comm.end();
+}
 //
 }
 
@@ -81,9 +94,8 @@ void setup()
     M5.begin();
     unifiedButton.begin(&lcd);
 
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
 
     auto before = esp_get_free_heap_size();
 
@@ -113,7 +125,6 @@ void setup()
     cfg.maxRetrans = 4;
     //cfg.nullSegmentTimeout = 1000 * 5;
     cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
-
     comm.begin(APP_ID, cfg);
     
     auto after = esp_get_free_heap_size();
@@ -125,6 +136,8 @@ void setup()
     lcd.setFont(&fonts::Font4);
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
+
+    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
 }
 
 void loop()
@@ -144,14 +157,13 @@ void loop()
     {
         M5_LOGI("%s", comm.debugInfo().c_str());
     }
-    
-    // Post my button status if TRX has begun.(Check in postReliable)
-    buttonTRX.postReliable(target, M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed());
-
-    comm.update();
-    unifiedButton.draw(dirty);
 
     if(failed) { return; }
+
+    // Post my button status if TRX has begun.
+    buttonTRX.postReliable(target, M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed());
+
+    unifiedButton.draw(dirty);
 
     // Can get the other device's button state like M5.BtnX
     auto& a = buttonTRX.BtnA(target);

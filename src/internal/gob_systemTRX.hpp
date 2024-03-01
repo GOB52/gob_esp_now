@@ -18,8 +18,14 @@ class SystemTRX : public Transceiver
     SystemTRX();
     virtual ~SystemTRX();
 
-    void acceptSYN(const bool enable) { _enableSYN = enable; }
-    bool broadcastAllowConnection();
+    // Handshake
+    inline bool canHandshake() const { return _enableHandshake; }
+    inline bool isHandshakeAllowed() const { return canHandshake(); }
+    inline bool isHandshakeDenied() const  { return !canHandshake(); }
+    void enableHandshake(const bool enable);
+    inline uint8_t  getMaxHandshakePeer() const { return _maxPeer; }
+     void setMaxHandshakePeer(const uint8_t num);
+    bool broadcastHandshake();
     bool postSYN(const MACAddress& addr, RUDP::config_t& cfg);
 
 #if !defined(NDEBUG)
@@ -31,8 +37,9 @@ class SystemTRX : public Transceiver
     virtual void on_receive(const MACAddress& addr, const TransceiverHeader* th) override;
 
   private:
-    bool _enableSYN{true};
-    uint8_t _peerMax{}; // 0 means as much as memory and ESP-NOW will allow
+    bool _enableHandshake{true};
+    uint8_t _maxPeer{}; // 0 means as much as memory and ESP-NOW will allow
+    uint8_t _handshaked{};
     
     // For handshake
     struct SynInfo
@@ -51,12 +58,9 @@ class SystemTRX : public Transceiver
         State status{State::None};
         unsigned long tm{};
         uint64_t sequence{};
+        uint64_t recvSeqSynAck{}; // received SYNACK sequence no
     };
     map_t<MACAddress, SynInfo> _synInfo;
-
-    //std::vector<MACAddress> _postSynAddr;
-    //std::vector<MACAddress> _recvSynAddr;
-
     friend class Communicator;
 };
 //

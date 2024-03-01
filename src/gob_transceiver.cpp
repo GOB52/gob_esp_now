@@ -53,7 +53,7 @@ bool Transceiver::delivered(const uint64_t seq)
 
 uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
-    if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { return 0; }
+    if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { LIB_LOGE("Not exists"); return 0; }
 
     uint8_t buf[sizeof(TransceiverHeader) + length]{};
     
@@ -65,14 +65,16 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
         return Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf)) ? seq : 0;
     }
     //All peers (Separate to each peer)
+#if 1
     esp_now_peer_info_t info{};
     if(esp_now_fetch_peer(true, &info) != ESP_OK) { return 0; }
 
     uint64_t rseq{};
     do
     {
+        //LIB_LOGE("Muti:[%s]:%d", MACAddress(info.peer_addr).toString().c_str(), MACAddress(info.peer_addr).isMulticast());
         if(MACAddress(info.peer_addr).isMulticast()) { continue; }
-        
+
         uint64_t seq{};
         make_data(seq, buf, RUDP::Flag::ACK, info.peer_addr, data, length);
         if(!Communicator::instance().postWithLock(info.peer_addr, buf, sizeof(buf)))
@@ -89,6 +91,16 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
         }
     }
     while(esp_now_fetch_peer(false, &info) == ESP_OK);
+#else
+    uint64_t rseq{};
+    for(auto& pi : _peerInfo)
+    {
+        if(pi.first.isMulticast()) { continue; }
+
+        
+    }
+#endif
+    
     return rseq;
 }
 
@@ -245,7 +257,7 @@ void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th
     if(th->isACK())
     {
         lock_guard _(_sem);
-        LIB_LOGD("<%s>:%u", th->isNUL() ? "NUL" : (th->isSYN() ? "SYN" : "ACK"), th->payloadSize());
+        LIB_LOGD("R:<%s>:%u", th->isNUL() ? "NUL" : (th->isSYN() ? "SYNACK" : "ACK"), th->payloadSize());
         (th->needReturnACK() ?  pi.recvSeq : pi.recvAckSeq) = rs;
         if(ra > pi.recvAck) { pi.recvAck = ra; }
         pi.needReturnACK |= th->needReturnACK();
@@ -276,10 +288,10 @@ String Transceiver::debugInfo() const
     s = formatString("TID:%u\n", _tid);
     for(auto& r : _peerInfo)
     {
-        s += formatString("  [%s] S(S:%llu SA;%llu A:%llu) R(S:%llu A:%llu T:%lu) NRA:%d\n",
+        s += formatString("  [%s] S(S:%llu SA;%llu A:%llu) R(S:%llu A:%llu RA:%llu T:%lu) NRA:%d\n",
                           r.first.toString().c_str(),
                           r.second.sequence, r.second.ackSequence, r.second.sentAck,
-                          r.second.recvSeq, r.second.recvAck, r.second.recvTime,
+                          r.second.recvSeq, r.second.recvAck, r.second.recvAckSeq, r.second.recvTime,
                           r.second.needReturnACK
                           );
 

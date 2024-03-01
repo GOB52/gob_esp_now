@@ -111,11 +111,13 @@ std::vector<uint8_t> append_queue(std::vector<uint8_t>& a, std::vector<uint8_t>&
     auto ssz = b_ch->size - sizeof(*b_ch);
     auto osz = a.size();
 
-    // TODO: check size!
+    // TODO: if overflow....
     a.resize(osz + ssz);
     std::memcpy(a.data() + osz, s, ssz);
     ch->count += b_ch->count;
     ch->size = a.size();
+
+    if(a.size() > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Packet overflow"); }
     return a;
 }
 
@@ -133,7 +135,7 @@ bool initialize_esp_now()
         auto r = esp_now_init();
         if(r != ESP_OK)
         {
-            LIB_LOGE("Failed to init:%d [%s]", r, err2cstr(r));
+            LIB_LOGE("Failed to init:0x%x [%s]", r, err2cstr(r));
         }
         return r == ESP_OK;
     }
@@ -287,7 +289,8 @@ void Communicator::update()
             if(_config.maxRetrans && ss.second.retry > _config.maxRetrans)
             {
                 LIB_LOGD("<Exceeded retry count>");
-                notify(Notify::ConnectionLost, &ss.first);
+                MACAddress copy(ss.first);
+                notify(Notify::ConnectionLost, &copy); // Passing ss.first is disabled inside notify, so copy
             }
         }
     
@@ -302,17 +305,17 @@ void Communicator::update()
                (/*_state[q.first].state != State::None &&*/
                    ms > _state[q.first].sentTime + _config.retransmissionTimeout))
             {
-                if(_state[q.first].state != State::None)
-                {
-                    LIB_LOGW("Resend to [%s]: %d times", q.first.toString().c_str(), _state[q.first].retry + 1);
-                }
-                LIB_LOGD("---- %s:%u:[%s]",
+                // TODO : realy need it?
+                if(!remove_acked(q.first, q.second)) { continue; }
+
+                LIB_LOGD("-- %s:%u:[%s]",
                          _state[q.first].state == State::None ? "Send" : "Resend",
                          _state[q.first].retry,q.first.toString().c_str());
 
                 startTime = micros();
                 sent = send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second);
-                if(!sent) { continue; }
+                if(!sent) { ++_state[q.first].retry; continue; }
+
                 if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
                 else { ++_state[q.first].retry; }
 #if 1
@@ -337,6 +340,7 @@ void Communicator::update()
     {
         xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
         auto oneTime = micros() - startTime;
+        ++_sentCount;
         _time += oneTime;
         _minTime = std::min(oneTime, _minTime);
         _maxTime = std::max(oneTime, _maxTime);
@@ -349,7 +353,8 @@ void Communicator::update()
 
     for(auto& ss : _state)
     {
-        //if(!ss.first) { continue; }
+        if(!ss.first || ss.first.isMulticast()) { continue; }
+
         // Send a NUL if I am the client when a null timeout occurs
         if(isSecondary()
            && (_queue.count(ss.first) && _queue.at(ss.first).empty())
@@ -364,7 +369,8 @@ void Communicator::update()
            && ms > ss.second.recvTime + _config.nullSegmentTimeout * 2)
         {
             LIB_LOGE("<NUL never come>");
-            notify(Notify::ConnectionLost, &ss.first);
+            MACAddress copy(ss.first);
+            notify(Notify::ConnectionLost, &copy); // Passing ss.first is disabled inside notify, so copy
         }
     }
 }
@@ -460,7 +466,7 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
     //    remove_not_need_resend(packet);
     if(ret != ESP_OK)
     {
-        LIB_LOGE("Failed to esp_now_send %s %d:%s", MACAddress(peer_addr).toString().c_str(), ret, err2cstr(ret));
+        LIB_LOGE("Failed to esp_now_send %s 0x%x:%s", MACAddress(peer_addr).toString().c_str(), ret, err2cstr(ret));
         return false;
     }
     _lastSentTime = millis();
@@ -536,13 +542,12 @@ void Communicator::reset_sent_state(const MACAddress& addr)
 // Call with communicator locked.
 void Communicator::notify(const Notify n, const void* arg)
 {
+    LIB_LOGW("%s", debugInfo().c_str());
+
     auto paddr = (const MACAddress*)arg;
     switch(n)
     {
-    case Notify::Disconnect:
-        LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
-        unregisterPeer(*paddr);
-        break;
+    case Notify::Disconnect: // [[fallthrough]]
     case Notify::ConnectionLost:
         LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
         unregisterPeer(*paddr);
@@ -575,7 +580,8 @@ bool Communicator::registerTransceiver(Transceiver* t)
         return t->identifier() == a->identifier();
     });
     if(it != _transceivers.end()) { LIB_LOGE("Same id exists %u", t->identifier()); return false; }
-    
+
+    // Add and sort by id ASC
     _transceivers.push_back(t);
     std::sort(_transceivers.begin(), _transceivers.end(), [](Transceiver* a, Transceiver* b)
     {
@@ -628,7 +634,7 @@ bool Communicator::registerPeer(const MACAddress& addr, const uint8_t channel, c
             }
         }
     }
-    if(ret != ESP_OK) { LIB_LOGE("Failed to add:%d [%s]", ret, err2cstr(ret)); }
+    if(ret != ESP_OK) { LIB_LOGE("Failed to add:0x%x [%s]", ret, err2cstr(ret)); }
     return ret == ESP_OK;;
 }
 
@@ -649,7 +655,7 @@ void Communicator::unregisterPeer(const MACAddress& addr)
             });
         }
     }
-    if(ret != ESP_OK) { LIB_LOGE("Failed to del:%d [%s]", ret, err2cstr(ret)); }
+    if(ret != ESP_OK) { LIB_LOGE("Failed to del:0x%x [%s]", ret, err2cstr(ret)); }
 }
 
 void Communicator::clearPeer()
@@ -701,7 +707,7 @@ void Communicator::callback_onSent(const uint8_t *peer_addr, esp_now_send_status
 void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t status)
 {
     bool succeed{status == ESP_NOW_SEND_SUCCESS};
-    if(!succeed) { LIB_LOGW("FAILED"); }
+    if(!succeed) { LIB_LOGW("FAILED:%s", addr.toString().c_str()); }
 
     {
         lock_guard _(_sem);
@@ -713,8 +719,7 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
         auto sz = _lastSentQueue.size();
         auto b = !_queue[addr].empty();
         _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
-        if(b) { LIB_LOGE("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
-
+        if(b) { LIB_LOGD("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
         
         if(_state.count(addr))
         {
@@ -728,7 +733,6 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
 void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* data, int length)
 {
     auto& comm = instance();
-
     auto ch = (const CommunicatorHeader*)data;
     if(ch->signeture != CommunicatorHeader::SIGNETURE
        || ch->app_id != comm._app_id) { LIB_LOGE("Illegal data"); return; }
@@ -751,7 +755,7 @@ void Communicator::onReceiveNotRegistered(const MACAddress& addr, const uint8_t*
         auto th = (const TransceiverHeader*)data;
         if(th->tid == 0) // system?
         {
-            _transceivers[0]->on_receive(addr, th); // [0] is sysTRX
+            _sysTRX->on_receive(addr, th);
         }
         else
         {
@@ -822,20 +826,37 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     }
 }
 
-void Communicator::acceptSYN(const bool enable)
-{
-    lock_guard _(_sem);
 
-    _enableSYN = enable;
-    _sysTRX->acceptSYN(enable);
+bool Communicator::isHandshakeAllowed() const
+{
+    return _sysTRX->isHandshakeAllowed();
 }
 
-bool Communicator::broadcastAllowConnection()
+bool Communicator::isHandshakeDenied() const
 {
-    if(isDenySYN()) { LIB_LOGE("SYN response denied"); return false; }
+    return _sysTRX->isHandshakeDenied();
+}
 
-    if(!existsPeer(BROADCAST)) { registerPeer(BROADCAST); }
-    return _sysTRX->broadcastAllowConnection();
+void Communicator::enableHandshake(const bool enable)
+{
+    _sysTRX->enableHandshake(enable);
+}
+
+uint8_t Communicator::getMaxHandshakePeer() const
+{
+    return _sysTRX->getMaxHandshakePeer();
+}
+
+void Communicator::setMaxHandshakePeer(const uint8_t num)
+{
+    _sysTRX->setMaxHandshakePeer(num);
+}
+
+bool Communicator::broadcastHandshake()
+{
+    if(isHandshakeDenied()) { LIB_LOGE("Handshake denied"); return false; }
+    if(!existsPeer(BROADCAST) &&!registerPeer(BROADCAST)) { return false; }
+    return _sysTRX->broadcastHandshake();
 }
 
 bool Communicator::postSYN(const MACAddress& addr)
@@ -850,7 +871,7 @@ String Communicator::debugInfo() const
 
     String s;
     s += formatString("Communicator app_id:%u, %zu transceivers\n", _app_id, _transceivers.size());
-    s += formatString("config:<%u/%u/%u/%u %u:%u:%u:%u>\n",
+    s += formatString("config:<RT:%u/CAT:%u/NST:%u/TST:%u mRt:%u mCa::%u mOs:%u mAr:%u>\n",
                       _config.retransmissionTimeout,
                       _config.cumulativeAckTimeout,
                       _config.nullSegmentTimeout,

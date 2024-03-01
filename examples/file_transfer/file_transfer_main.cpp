@@ -38,7 +38,8 @@ constexpr uint8_t TRANSCEIVER_ID = 47;
 MACAddress devices[] =
 {
     MACAddress(DEVICE_A),
-    MACAddress(DEVICE_B),
+    //MACAddress(DEVICE_B),
+    MACAddress(DEVICE_C),
 };
 MACAddress target;
 TransferTRX transfer(TRANSCEIVER_ID);
@@ -160,7 +161,7 @@ void disp()
         lcd.printf("%02ld:%02ld:%02ld:%03ld\n", h, m % 60, s % 60, pt % 1000);
         lcd.fillRect(0, lcd.height() - 64, lcd.width() * rate, 32, TFT_BLUE);
         lcd.printf("%lu\n", transfer.averageSpeed());
-        lcd.printf("%s:%x", recv_crc ? "FILE CRC" : "CRC", recv_crc ? recv_crc : transfer.crc32());
+        lcd.printf("%s:%x", file_crc ? "FILE CRC" : "CRC", file_crc ? file_crc : transfer.crc32());
     }
     lcd.endWrite();
 }

@@ -96,6 +96,11 @@ class MACAddress
     inline uint8_t        operator[](size_t i) const&& { assert(i < ESP_NOW_ETH_ALEN && "Invalid index"); return std::move(_addr[i]); }
     //! @brief direct access to the underlying array 
     inline constexpr const uint8_t* data() const { return _addr; }
+    /*! @brief Obtaining the peer_addr format for ESP-NOW
+      @retval nullptr For all peers
+      @retval != nullptr Unicast address
+     */
+    inline constexpr const uint8_t* peer_addr() const { return static_cast<const uint8_t*>(*this); }
     /// @}
 
     /*!

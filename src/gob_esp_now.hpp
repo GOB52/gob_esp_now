@@ -186,10 +186,12 @@ class Communicator
 
     ///@name Handshake
     ///@{
-    inline bool isAllowSYN() const { return _enableSYN; } //!< @brief Is allowed SYN response?
-    inline bool isDenySYN() const { return !isAllowSYN(); } //!< @brief Is denied SYN response?
-    inline void acceptSYN(const bool enable); //!< @brief Allow/deny SYN request response
-    bool broadcastAllowConnection();
+    bool isHandshakeAllowed() const; //!< @brief Is allowed SYN response?
+    bool isHandshakeDenied() const; //!< @brief Is denied SYN response?
+    void enableHandshake(const bool enable); //!< @brief Allow/deny SYN request response
+    uint8_t  getMaxHandshakePeer() const; //!< @brief Gets the maximum number of peers that can be handshaked
+    void setMaxHandshakePeer(const uint8_t num); //!< @brief Set the maximum number of peers that can be handshaked
+    bool broadcastHandshake(); //!< @breif Broadcast transmission of connection negotiations
     bool postSYN(const MACAddress& addr); //!< @brief Post SYN request
     ///@}
     
