@@ -30,10 +30,8 @@ constexpr uint8_t BUTTON_TRANSCEIVER_ID = 1;
 
 MACAddress devices[] =
 {
-    //    MACAddress(DEVICE_A),
+    MACAddress(DEVICE_A),
     MACAddress(DEVICE_B),
-    MACAddress(DEVICE_C),
-    
 };
 MACAddress target;
 ButtonTRX  buttonTRX(BUTTON_TRANSCEIVER_ID);
@@ -55,17 +53,6 @@ const char* bstr(const m5::Button_Class::button_state_t s)
     return button_state_string[(uint8_t)s];
 }
 #endif
-void comm_task(void*)
-{
-    auto& comm = Communicator::instance();
-    for(;;)
-    {
-        comm.update();
-        delay(1);
-    }
-    // NOT REACHED
-    //comm.end();
-}
 //
 }
 
@@ -118,14 +105,18 @@ void setup()
         lcd.clear(TFT_RED);
         while(true) { delay(1000); }
     }
-    
+
+#if 0
     auto cfg = comm.config();
     cfg.retransmissionTimeout = 300;
     cfg.cumulativeAckTimeout = 100;
     cfg.maxRetrans = 4;
-    //cfg.nullSegmentTimeout = 1000 * 5;
     cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
     comm.begin(APP_ID, cfg);
+#else
+    comm.begin(APP_ID);
+#endif
+
     
     auto after = esp_get_free_heap_size();
     M5_LOGI("library usage:%u", before - after);
@@ -136,8 +127,6 @@ void setup()
     lcd.setFont(&fonts::Font4);
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
-
-    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
 }
 
 void loop()

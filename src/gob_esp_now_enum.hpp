@@ -1,3 +1,10 @@
+/*!
+  @file gob_esp_now_enum.hpp
+  @brief Enumeration definition
+
+  @copyright 2023 GOB
+  @copyright Licensed under the MIT license. See LICENSE file in the project root for full license information.
+*/
 #ifndef GOB_ESP_NOW_ENUM_HPP
 #define GOB_ESP_NOW_ENUM_HPP
 
@@ -34,7 +41,6 @@ enum class Notify : uint8_t
     ConnectionLost, //!< @brief Connection lost
     Shookhands,     //!< @brief Completed the 3-way handshake
 };
-
 //
 }}
 #endif

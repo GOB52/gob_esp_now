@@ -119,7 +119,7 @@ class MACAddress
      */
     String toString(const bool mask = false) const;
     
-    /// @cond 0
+    /// @cond
     friend bool operator==(const MACAddress& a, const MACAddress& b);
     friend bool operator!=(const MACAddress& a, const MACAddress& b);
     friend bool operator< (const MACAddress& a, const MACAddress& b);

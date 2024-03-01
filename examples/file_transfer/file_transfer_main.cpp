@@ -38,8 +38,7 @@ constexpr uint8_t TRANSCEIVER_ID = 47;
 MACAddress devices[] =
 {
     MACAddress(DEVICE_A),
-    //MACAddress(DEVICE_B),
-    MACAddress(DEVICE_C),
+    MACAddress(DEVICE_B),
 };
 MACAddress target;
 TransferTRX transfer(TRANSCEIVER_ID);
@@ -129,19 +128,6 @@ void comm_callback(const Notify notify, const void* arg)
     transfer.abort();
 }
 
-// Communicator task
-void comm_task(void*)
-{
-    auto& comm = Communicator::instance();
-    for(;;)
-    {
-        comm.update();
-        delay(1);
-    }
-    // NOT REACHED
-    //comm.end();
-}
-
 void disp()
 {
     lcd.startWrite();
@@ -159,7 +145,7 @@ void disp()
         auto m = s/60;
         auto h = m/60;
         lcd.printf("%02ld:%02ld:%02ld:%03ld\n", h, m % 60, s % 60, pt % 1000);
-        lcd.fillRect(0, lcd.height() - 64, lcd.width() * rate, 32, TFT_BLUE);
+        lcd.fillRect(0, lcd.height() - 48, lcd.width() * rate, 32, TFT_BLUE);
         lcd.printf("%lu\n", transfer.averageSpeed());
         lcd.printf("%s:%x", file_crc ? "FILE CRC" : "CRC", file_crc ? file_crc : transfer.crc32());
     }
@@ -229,15 +215,14 @@ void setup()
     cfg.retransmissionTimeout = 200;
     cfg.maxRetrans = 4;
     cfg.nullSegmentTimeout = 5000;
-    //cfg.nullSegmentTimeout = 0; // Don't use heartbeat
     comm.begin(APP_ID, cfg);
+
     auto after = esp_get_free_heap_size();
     M5_LOGI("Library usage:%u : %uK", before - after, (before - after) / 1024);
     
     esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
     M5_LOGI("%s", comm.debugInfo().c_str());
 
-    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
     xTaskCreateUniversal(disp_task, "disp", 1024 * 8, nullptr, 1, nullptr, 0);
 
     M5_LOGI("Heap at end of setup:%u", esp_get_free_heap_size());
@@ -277,7 +262,7 @@ void loop()
             {
                 lcd.startWrite();
                 lcd.clear(TFT_CYAN);
-                lcd.fillRect(0, lcd.height() - 64, lcd.width(), 32, TFT_WHITE);
+                lcd.fillRect(0, lcd.height() - 48, lcd.width(), 32, TFT_WHITE);
                 lcd.endWrite();
                 dirty = true;
             });
@@ -287,7 +272,7 @@ void loop()
             {
                 lcd.startWrite();
                 lcd.clear(TFT_ORANGE);
-                lcd.fillRect(0, lcd.height() - 64, lcd.width(), 32, TFT_WHITE);
+                lcd.fillRect(0, lcd.height() - 48, lcd.width(), 32, TFT_WHITE);
                 lcd.endWrite();
                 dirty = true;
             });

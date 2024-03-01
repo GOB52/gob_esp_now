@@ -7,6 +7,7 @@
 */
 #include "gob_transceiver.hpp"
 #include "gob_esp_now_vmap.hpp"
+#include "gob_esp_now_config.hpp"
 
 namespace goblib { namespace esp_now {
 
@@ -26,7 +27,7 @@ class SystemTRX : public Transceiver
     inline uint8_t  getMaxHandshakePeer() const { return _maxPeer; }
      void setMaxHandshakePeer(const uint8_t num);
     bool broadcastHandshake();
-    bool postSYN(const MACAddress& addr, RUDP::config_t& cfg);
+    bool postSYN(const MACAddress& addr, const config_t& cfg);
 
 #if !defined(NDEBUG)
     virtual String debugInfo() const override;

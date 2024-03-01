@@ -203,11 +203,13 @@ Communicator:: Communicator()
     _transceivers.push_back(_sysTRX);
 }
 
-bool Communicator::begin(const uint8_t app_id, const RUDP::config_t& cfg)
+bool Communicator::begin(const uint8_t app_id, const config_t& cfg)
 {
-    if(_began) { return true; }
+    if(_began) { LIB_LOGW("Already begun"); return true; }
 
     lock_guard _(_sem);
+
+    _config = cfg;
     
     // Initialize ESP-NOW if it has not already been initialized.
     if(!initialize_esp_now()) { return false; }
@@ -238,29 +240,47 @@ bool Communicator::begin(const uint8_t app_id, const RUDP::config_t& cfg)
         while(esp_now_fetch_peer(false, &info) == ESP_OK);
     }
 
-    _config = cfg;
-    _began = true;
-    return true;
+    _receive_queue = xQueueCreate(_config.receive_queue_size, sizeof(RecvQueueData));
+    xTaskCreateUniversal(receive_task, "gen_receive",
+                         _config.task_stack_size, this, _config.receive_priority, &_receive_task, _config.receive_core);
+
+    // If update_priority is zero, the user explicitly calls it.
+    if(_config.update_priority)
+    {
+        xTaskCreateUniversal(update_task, "gen_update",
+                         _config.task_stack_size, this, _config.update_priority, &_update_task, _config.update_core);
+    }
+    
+    _began = (_config.update_priority ? _update_task != nullptr : true) && _receive_task && _receive_queue;
+
+    if(!_began) { end(); }
+    return _began;
 }
 
 void Communicator::end()
 {
     lock_guard _(_sem);
-    if(_began)
-    {
-        _began = false;
-        _transceivers.clear();
-        _transceivers.push_back(_sysTRX);
-        _lastSentTime = 0;
-        clearPeer();
-        esp_now_unregister_send_cb();
-        esp_now_unregister_recv_cb();
-    }
+    _began = false;
+    _transceivers.clear();
+    _transceivers.push_back(_sysTRX);
+    _lastSentTime = 0;
+    clearPeer();
+    esp_now_unregister_send_cb();
+    esp_now_unregister_recv_cb();
+
+    if(_update_task)  { vTaskDelete(_update_task); _update_task = nullptr; }
+    if(_receive_task) {vTaskDelete(_receive_task);  _receive_task = nullptr; }
+    vQueueDelete(_receive_queue);
+    _receive_queue = nullptr;
 }
 
 void Communicator::update()
 {
     if(!_began) { return; }
+
+    // Initialized with the value at begin()
+    static auto cat = _config.cumulativeAckTimeout;
+    static auto mca = _config.maxCumAck;
 
     auto ms = millis();
     unsigned long startTime{};
@@ -274,11 +294,12 @@ void Communicator::update()
         for(auto& q : _queue) { remove_acked(q.first, q.second); }
 
         // Update transceivers
+
         for(auto& t : _transceivers)
         {
             t->with_lock([this, &t, &ms]()
             {
-                t->_update(ms, this->_config);
+                t->_update(ms, cat, mca);
                 t->update(ms);
             });
         }
@@ -737,10 +758,21 @@ void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* d
     if(ch->signeture != CommunicatorHeader::SIGNETURE
        || ch->app_id != comm._app_id) { LIB_LOGE("Illegal data"); return; }
 
+
+    RecvQueueData rqd = { MACAddress(peer_addr), {}, (uint8_t)length };
+    memcpy(rqd.buf, data, length);
+    if(xQueueSend(comm._receive_queue, &rqd, 0) != pdPASS)
+    {
+        LIB_LOGE("Faile to send Queue");
+    }
+    
+    
+    #if 0
     MACAddress addr(peer_addr);
     if(esp_now_is_peer_exist(peer_addr)) { comm.onReceive(addr, data, length); }
     // Data probably from broadcast communication (no peers registered yet)
     else                                 { comm.onReceiveNotRegistered(addr, data, length); }
+    #endif
 }
 
 void Communicator::onReceiveNotRegistered(const MACAddress& addr, const uint8_t* data, const uint8_t length)
@@ -863,6 +895,35 @@ bool Communicator::postSYN(const MACAddress& addr)
 {
     return _sysTRX->postSYN(addr, _config);
 }
+
+void Communicator::update_task(void* arg)
+{
+    Communicator* comm = (Communicator*)arg;
+    config_t cfg = comm->config();
+
+    for(;;)
+    {
+        comm->update();
+        // Do not get stuck in WDT and ensure that processing is passed on to lower priority tasks.
+        if(cfg.update_core == 0 || cfg.update_priority > 1) { delay(1); }
+    }
+}
+
+void Communicator::receive_task(void* arg)
+{
+    Communicator* comm = (Communicator*)arg;
+    config_t cfg = comm->config();
+    RecvQueueData data;
+    
+    for(;;)
+    {
+        // If there is nothing in the Queue, the process moves to another task,
+        // so unlike update_task, no explicit delay is called.
+        xQueueReceive(comm->_receive_queue, &data, portMAX_DELAY);
+        comm->onReceive(data.addr, data.buf, data.size);
+    }
+}
+
 
 #if !defined(NDEBUG)
 String Communicator::debugInfo() const

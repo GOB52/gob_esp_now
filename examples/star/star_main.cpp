@@ -30,17 +30,6 @@ Mode mode{Idle};
 //
 }
 
-void comm_task(void*)
-{
-    for(;;)
-    {
-        comm.update();
-        delay(1);
-    }
-    // NOT REACHED
-    //comm.end();
-}
-
 // This callback is called in the same task as Communicator::update()
 void comm_callback(const Notify notify, const void* arg)
 {
@@ -125,8 +114,6 @@ void setup()
     lcd.setTextColor(TFT_WHITE);
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
-
-    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
 }
 
 void waiting_loop()

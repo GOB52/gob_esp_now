@@ -15,6 +15,7 @@
 #define GOBLIB_ESP_NOW_HPP
 
 #include <esp_now.h>
+#include "gob_esp_now_config.hpp"
 #include "gob_mac_address.hpp"
 #include "gob_rudp.hpp"
 #include "gob_transceiver.hpp"
@@ -60,10 +61,10 @@ class Communicator
 {
   public:
     using notify_function = void(*)(const Notify notify, const void* arg);
-
+    
     static Communicator& instance();
     
-    ///@cond 0
+    ///@cond
     Communicator(const Communicator&) = delete;
     Communicator& operator=(const Communicator&) = delete;
     /// @endcond
@@ -73,7 +74,7 @@ class Communicator
     inline const MACAddress& address() const  { return _addr; } //!< @brief Gets the self address
     inline const MACAddress& primaryAddress() const  { return _primaryAddr; } //!< @brief Gets the primary address if exists
     inline unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
-    inline RUDP::config_t config() const { return _config; } //!< @brief Gets the RUDP configuretion
+    inline config_t config() const { return _config; } //!< @brief Gets the configuretion
     ///@}
 
     ///@name Role
@@ -91,13 +92,13 @@ class Communicator
       @brief Begin communication
       @param app_id Unique value for each application
     */
-    inline bool begin(const uint8_t app_id) { return begin(app_id, RUDP::config_t{}); }
+    inline bool begin(const uint8_t app_id) { return begin(app_id, config_t{}); }
     /*!
       @brief Begin communication
       @param app_id Unique value for each application
       @param cfg Configuretion
     */
-    bool begin(const uint8_t app_id, const RUDP::config_t& cfg);
+    bool begin(const uint8_t app_id, const config_t& cfg);
     void end();
     /*!
       @brief Update comminicator
@@ -215,6 +216,7 @@ class Communicator
 #endif
     
   protected:
+    ///@cond
     struct State
     {
         enum Status : uint8_t { None, Succeed, Failed };
@@ -225,6 +227,7 @@ class Communicator
         inline void reset() { state = None; }
 
     } __attribute__((__packed__));
+    ///@endcond
 
     Communicator();
     
@@ -245,8 +248,21 @@ class Communicator
     void reset_sent_state(const MACAddress& addr);
 
   private:
+    static void update_task(void*);
+    static void receive_task(void*);
+    
+  private:
     mutable SemaphoreHandle_t _sem{};
+    TaskHandle_t _update_task{}, _receive_task{};
     QueueHandle_t _permitToSend{};
+
+    struct RecvQueueData
+    {
+        MACAddress addr;
+        uint8_t buf[ESP_NOW_MAX_DATA_LEN];
+        uint8_t size;
+    };
+    QueueHandle_t _receive_queue{};
     
     uint8_t _app_id{};// Application-specific ID
     bool _began{};
@@ -256,7 +272,7 @@ class Communicator
     
     MACAddress _addr{}; // Self address
     MACAddress _primaryAddr{};
-    RUDP::config_t _config{};
+    config_t _config{};
 
     SystemTRX* _sysTRX{}; // System transceiver
     std::vector<Transceiver*> _transceivers; // transceivers, [0] is _sysTRX

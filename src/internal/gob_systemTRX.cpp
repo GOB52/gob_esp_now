@@ -65,7 +65,7 @@ bool SystemTRX::broadcastHandshake()
     return postUnreliable(goblib::esp_now::BROADCAST, pl);
 }
 
-bool SystemTRX::postSYN(const MACAddress& addr, RUDP::config_t& cfg)
+bool SystemTRX::postSYN(const MACAddress& addr, const config_t& cfg)
 {
     uint64_t seq{};
     return post_rudp(seq, addr.data(), RUDP::Flag::SYN, &cfg, sizeof(cfg));
@@ -245,7 +245,7 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
                 
                 // TODO sequence.ack,ackseq....
                 comm.setRole(Role::Secondary);
-                const RUDP::config_t* cfg = (const RUDP::config_t*)th->payload();
+                auto cfg = (const config_t*)th->payload();
                 comm._config = *cfg;
                 comm._primaryAddr = addr;
                 _synInfo[addr].status = SynInfo::State::PostACK;

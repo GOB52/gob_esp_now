@@ -64,7 +64,7 @@ class Transceiver
     explicit Transceiver(const uint8_t tid);
     virtual ~Transceiver();
 
-    ///@cond 0
+    ///@cond
     Transceiver(const Transceiver&) = delete;
     Transceiver& operator=(const Transceiver&) = delete;
     ///@endcond
@@ -239,6 +239,7 @@ class Transceiver
         return delivered(restore_u64_earlier(_peerInfo[addr].sequence, seq), addr);
     }
     
+    ///@cond
     struct PeerInfo
     {
         // ACK with payload
@@ -253,6 +254,7 @@ class Transceiver
         unsigned long recvTime{}; // R
         bool needReturnACK{};     // R
     } __attribute__((__packed__));
+    ///@endcond
 
     // If derived, call the parent on_receive first!
     // Normally, an override of onReceive should do the trick.
@@ -260,7 +262,7 @@ class Transceiver
 
   private:
     Transceiver();
-    void _update(const unsigned long ms, const RUDP::config_t& cfg);
+    void _update(const unsigned long ms, const uint8_t cat, const uint8_t mca);
 
 
   protected:

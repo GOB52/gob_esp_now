@@ -209,7 +209,7 @@ bool Transceiver::make_data(uint64_t& seq, uint8_t* obuf, const RUDP::Flag flag,
     return th->isACK() ? seq != 0 : true;
 }
 
-void Transceiver::_update(const unsigned long ms, const RUDP::config_t& cfg)
+void Transceiver::_update(const unsigned long ms, const uint8_t cumulativeAckTimeout, const uint8_t maxCumAck)
 {
     // Send ACk force?
     std::set<MACAddress> addrs;
@@ -220,14 +220,14 @@ void Transceiver::_update(const unsigned long ms, const RUDP::config_t& cfg)
 
         // Send ACK if nothing is sent for a certain period of time after receiving ACK with payload
         auto rtm = pi.second.recvTime;
-        if(rtm && ms > rtm + cfg.cumulativeAckTimeout)
+        if(rtm && ms > rtm + cumulativeAckTimeout)
         {
             LIB_LOGD(">> ForceACK:Timeout");
             addrs.insert(pi.first);
             continue;
         }
         // Post ACK if the number of unrespond ACKs exceeds a certain number
-        if(!cfg.maxCumAck || pi.second.recvSeq > pi.second.sentAck + cfg.maxCumAck)
+        if(!maxCumAck || pi.second.recvSeq > pi.second.sentAck + maxCumAck)
         {
             LIB_LOGD(">> FoeceACK:Cum");
             addrs.insert(pi.first);
