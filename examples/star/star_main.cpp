@@ -136,7 +136,6 @@ void waiting_loop()
 void disp()
 {
     if(!dirty) { return; }
-    dirty = false;
     lcd.clear(TFT_ORANGE);
     
     constexpr int16_t radius = 16;
@@ -171,6 +170,7 @@ void disp()
         ++idx;
     }
     unifiedButton.draw(dirty);
+    dirty = false;
 }
 
 void primary_loop()
@@ -185,7 +185,7 @@ void primary_loop()
     lcd.printf("Peer:%zu\n", v.size());
     for(auto& addr : v)
     {
-        lcd.printf(" [%s]:%02x\n", addr.toString(true).c_str(), buttonTRX.raw(addr));
+        lcd.printf(" [%s]:%02x:%d\n", addr.toString(true).c_str(), buttonTRX.raw(addr), buttonTRX.BtnA(addr).wasClicked());
     }
 
     int now = (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2);
@@ -208,8 +208,10 @@ void secondary_loop()
     disp();
     lcd.setCursor(0, 0);
     lcd.printf("%c:%s\n", comm.isPrimary() ? 'P' : 'S', comm.address().toString(true).c_str());
-    lcd.printf("P:%s:%02x\n",  comm.primaryAddress().toString(true).c_str(), buttonTRX.raw(comm.primaryAddress()));
-
+    lcd.printf("P:%s:%02x:%d\n",
+               comm.primaryAddress().toString(true).c_str(),
+               buttonTRX.raw(comm.primaryAddress()),
+               buttonTRX.BtnA(comm.primaryAddress()).wasClicked());
 
     int now = (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2);
     // Send if button status changed

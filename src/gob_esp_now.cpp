@@ -768,26 +768,8 @@ void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* d
     }
 #else
     MACAddress addr(peer_addr);
-    if(esp_now_is_peer_exist(peer_addr)) { comm.onReceive(addr, data, length); }
-    // Data probably from broadcast communication (no peers registered yet)
-    else                                 { comm.onReceiveNotRegistered(addr, data, length); }
+    comm.onReceive(addr, data, length);
 #endif
-}
-
-void Communicator::onReceiveNotRegistered(const MACAddress& addr, const uint8_t* data, const uint8_t length)
-{
-    // Data probably from broadcast communication (no peers registered yet)
-    // Pass to system transceiver
-    auto ch = (const CommunicatorHeader*)data;
-    auto cnt = ch->count;
-    data += sizeof(CommunicatorHeader);
-    while(cnt--)
-    {
-        auto th = (const TransceiverHeader*)data;
-        if(th->tid == 0) { _sysTRX->on_receive(addr, th); }
-        else { LIB_LOGW("Reject data from unregistered peers %s:%u", addr.toString().c_str(), th->tid); }
-        data += th->size;
-    }
 }
 
 void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)
@@ -803,8 +785,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     }
 #endif
 #endif
-    LIB_LOGD("---- RECV:[%s]", addr.toString().c_str());
-
+    //    LIB_LOGD("---- RECV:[%s]", addr.toString().c_str());
     lock_guard _(_sem);
 
     ++_receive_count;
@@ -833,10 +814,7 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                             return seq == rseq + 1;
                         });
                 
-                if(correct)
-                {
-                    t->on_receive(addr, th);
-                }
+                if(correct) { t->on_receive(addr, th); }
                 else
                 {
                     auto rs = th->needReturnACK() ?

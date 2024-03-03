@@ -239,7 +239,6 @@ class Communicator
     void onSent(const MACAddress& addr, const esp_now_send_status_t status);
     static void callback_onReceive(const uint8_t *mac_addr, const uint8_t* data, int length);
     void onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length);
-    void onReceiveNotRegistered(const MACAddress& addr, const uint8_t* data, const uint8_t length);
     ///@}
 
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
