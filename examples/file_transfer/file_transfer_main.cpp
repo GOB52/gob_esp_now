@@ -38,7 +38,8 @@ constexpr uint8_t TRANSCEIVER_ID = 47;
 MACAddress devices[] =
 {
     MACAddress(DEVICE_A),
-    MACAddress(DEVICE_B),
+    //MACAddress(DEVICE_B),
+    MACAddress(DEVICE_C),
 };
 MACAddress target;
 TransferTRX transfer(TRANSCEIVER_ID);
@@ -76,6 +77,21 @@ void ls(File dir, uint8_t indent = 0)
     while(true);
 }
 
+void ls(const char* dir)
+{
+    File f = sd.open(dir);
+    ls(f);
+}
+
+void dump(const uint8_t* buf, const size_t len)
+{
+    for(size_t i = 0; i < len; ++i)
+    {
+        M5.Log.printf("%02x%c", buf[i], ((i + 1) % 16) ? ' ' : '\n');
+    }
+    M5.Log.println();
+}
+
 // Prepare those files in SD
 /*
  Make by terminal command
@@ -103,7 +119,6 @@ const char* status_string(const TransferTRX::Status s)
     static const char* tbl[] = { "None", "Send", "Recv" };
     return tbl[(uint8_t)s];
 }
-
 //
 }
 
@@ -182,14 +197,11 @@ void setup()
     while(retry-- && !(mounted = sd.begin((unsigned)TFCARD_CS_PIN, SD_SCK_MHZ(25))) ) { delay(100); }
     if(!mounted) { M5_LOGE("Failed to mount %x", sd.sdErrorCode()); lcd.clear(TFT_RED); while(1) { delay(10000); }}
     
-    unifiedButton.begin(&lcd);
+    unifiedButton.begin(&lcd, goblib::UnifiedButton::appearance_t::transparent_all);
 
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
     WiFi.mode(WIFI_STA);
-
+    WiFi.disconnect();
     lcd.setFont(&fonts::Font4);
-    unifiedButton.setFont(&fonts::Font4);
 
     //
     auto before = esp_get_free_heap_size();
@@ -212,9 +224,7 @@ void setup()
     comm.registerNotifyCallback(comm_callback);
     
     auto cfg = comm.config();
-    cfg.retransmissionTimeout = 200;
-    cfg.maxRetrans = 4;
-    cfg.nullSegmentTimeout = 5000;
+    cfg.update_priority = 2;
     comm.begin(APP_ID, cfg);
 
     auto after = esp_get_free_heap_size();
@@ -226,7 +236,6 @@ void setup()
     xTaskCreateUniversal(disp_task, "disp", 1024 * 8, nullptr, 1, nullptr, 0);
 
     M5_LOGI("Heap at end of setup:%u", esp_get_free_heap_size());
-    //Heap:212708
     lcd.clear(TFT_DARKGREEN);
 }
 
@@ -235,6 +244,7 @@ void loop()
     auto& comm = Communicator::instance();
 
     M5.update();
+    unifiedButton.update();
     if(!transfer.inProgress() && M5.BtnA.wasClicked())
     {
         String path = formatString("%s/%s", dir, files[file_index]);

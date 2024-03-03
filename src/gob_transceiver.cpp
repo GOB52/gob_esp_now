@@ -222,14 +222,14 @@ void Transceiver::_update(const unsigned long ms, const uint8_t cumulativeAckTim
         auto rtm = pi.second.recvTime;
         if(rtm && ms > rtm + cumulativeAckTimeout)
         {
-            LIB_LOGD(">> ForceACK:Timeout");
+            LIB_LOGE(">> ForceACK:Timeout");
             addrs.insert(pi.first);
             continue;
         }
         // Post ACK if the number of unrespond ACKs exceeds a certain number
         if(!maxCumAck || pi.second.recvSeq > pi.second.sentAck + maxCumAck)
         {
-            LIB_LOGD(">> FoeceACK:Cum");
+            LIB_LOGE(">> FoeceACK:Cum");
             addrs.insert(pi.first);
         }
     }

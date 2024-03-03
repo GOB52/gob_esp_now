@@ -23,7 +23,7 @@ struct config_t
 {
     ///@name Communicator
     ///@{
-    uint8_t update_priority{2};     //!< @brief Priority of the update task. Zero means If zero, the user explicitly calls it.
+    uint8_t update_priority{1};     //!< @brief Priority of the update task. Zero means If zero, the user explicitly calls it.
     uint8_t update_core{1};         //!< @brief CPU core on which the update task is executed
     uint8_t receive_priority{2};    //!< @brief Priority of the receive task
     uint8_t receive_core{1};        //!< @brief CPU core on which the receive task is executed

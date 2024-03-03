@@ -254,7 +254,14 @@ class Communicator
   private:
     mutable SemaphoreHandle_t _sem{};
     TaskHandle_t _update_task{}, _receive_task{};
-    QueueHandle_t _permitToSend{};
+    uint32_t _update_count{}, _receive_count{};
+  public:
+    uint32_t update_count() const { return _update_count; }
+    uint32_t receive_count() const { return _receive_count; }
+
+  private:
+    
+    QueueHandle_t _permitToSend{}, _postedAny{};
 
     struct RecvQueueData
     {

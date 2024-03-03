@@ -9,6 +9,9 @@
 #include <cmath>
 #include "../shared/buttonTRX.hpp"
 
+
+#include <esp_timer.h>
+
 using namespace goblib::esp_now;
 
 namespace
@@ -104,15 +107,17 @@ void setup()
     cfg.maxRetrans = 4;
     //cfg.nullSegmentTimeout = 1000 * 5;
     cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
-    comm.begin(APP_ID);
+    //    comm.begin(APP_ID, cfg);
+    cfg.update_priority = 0;
+    comm.begin(APP_ID, cfg);
 #endif
     
-    //esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
+    esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
     M5_LOGI("%s", comm.debugInfo().c_str());
     
     lcd.setFont(&fonts::Font4);
-    lcd.setTextColor(TFT_WHITE);
-    unifiedButton.setFont(&fonts::Font4);
+    //    lcd.setTextColor(TFT_WHITE);
+    unifiedButton.setFont(&fonts::Font2);
     lcd.clear(TFT_DARKGREEN);
 }
 
@@ -126,9 +131,8 @@ void waiting_loop()
         mode = Mode::Idle;
         lcd.clear(TFT_DARKGREEN);
     }
+    unifiedButton.draw(dirty);
 }
-
-
 void disp()
 {
     if(!dirty) { return; }
@@ -166,10 +170,13 @@ void disp()
         lcd.fillCircle(x, y, radius, self == addr ? TFT_RED : TFT_BLUE);
         ++idx;
     }
+    unifiedButton.draw(dirty);
 }
 
 void primary_loop()
 {
+    static int btn{ (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2) };
+
     disp();
     lcd.setCursor(0, 0);
     lcd.printf("%c:%s\n", comm.isPrimary() ? 'P' : 'S', comm.address().toString(true).c_str());
@@ -181,36 +188,40 @@ void primary_loop()
         lcd.printf(" [%s]:%02x\n", addr.toString(true).c_str(), buttonTRX.raw(addr));
     }
 
-#if 1
-    M5_LOGW("post btn P");
-    if(!buttonTRX.postReliable(MACAddress(), M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed()))
+    int now = (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2);
+    // Send if button status changed
+    // (If there are too many transmissions, the other party will not be able to receive and process them in time)
+    if(now != btn)
     {
-        M5_LOGE("Failed to btn post");
+        btn = now;
+        if(!buttonTRX.postReliable(M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed()))
+        {
+            M5_LOGE("Failed to post btn");
+        }
     }
-#else
-    uint8_t tmp[3]{};
-    if(M5.BtnA.wasClicked()) { buttonTRX.postReliable(tmp); }
-#endif
 }
 
 void secondary_loop()
 {
+    static int btn{ (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2) };
+
     disp();
     lcd.setCursor(0, 0);
     lcd.printf("%c:%s\n", comm.isPrimary() ? 'P' : 'S', comm.address().toString(true).c_str());
     lcd.printf("P:%s:%02x\n",  comm.primaryAddress().toString(true).c_str(), buttonTRX.raw(comm.primaryAddress()));
 
-#if 1
-    M5_LOGW("post btn S");
-    if(!buttonTRX.postReliable(comm.primaryAddress(), M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed()))
-    {
-        M5_LOGE("Failed to btn post");
-    }
-#else
-    uint8_t tmp[3]{};
-    if(M5.BtnA.wasClicked()) { buttonTRX.postReliable(tmp, sizeof(tmp)); }
-#endif
 
+    int now = (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2);
+    // Send if button status changed
+    // (If there are too many transmissions, the other party will not be able to receive and process them in time)
+    if(now != btn)
+    {
+        btn = now;
+        if(!buttonTRX.postReliable(M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed()))
+        {
+            M5_LOGE("Failed to post btn");
+        }
+    }
 }
 
 void idle_loop()
@@ -231,6 +242,7 @@ void idle_loop()
             M5_LOGE("Failed to broadcastHandshake");
         }
     }
+    unifiedButton.draw(dirty);
 }
 
 void loop()
@@ -245,7 +257,8 @@ void loop()
     case Mode::Waiting:   waiting_loop();   break;
     default: idle_loop(); break;
     }
-    if(M5.BtnPWR.wasClicked()) { M5_LOGI("%s", comm.debugInfo().c_str()); }
 
-    unifiedButton.draw();
+    comm.update();
+
+    if(M5.BtnPWR.wasClicked()) { M5_LOGI("%s", comm.debugInfo().c_str()); }
 }

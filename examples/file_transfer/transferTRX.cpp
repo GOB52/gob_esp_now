@@ -2,7 +2,7 @@
 #include <SdFat.h>
 #include <M5Unified.h>
 #include "transferTRX.hpp"
-#include <FastCRC.h>
+#include <CRC32.h>
 
 extern SdFs sd; // file_transfer_main.cpp
 
@@ -10,10 +10,7 @@ using goblib::esp_now::MACAddress;
 
 uint32_t calculateCRC32(const char* path)
 {
-    FastCRC32 crc;
-    uint32_t val{};
-    bool first{true};
-
+    CRC32 crc;
     File f = sd.open(path);
     if(!f) { M5_LOGE("Failed to open [%s]\n", path); return 0; }
 
@@ -29,14 +26,13 @@ uint32_t calculateCRC32(const char* path)
             delete[] buf;
             return 0;
         }
-        val = first ? crc.crc32(buf, sz) : crc.crc32_upd(buf, sz); // 802.3
-        //val = first ? crc.cksum(buf, sz) : crc.cksum_upd(buf, sz); // POSIX
-        first = false;
+        crc.add(buf, sz);
     }
     f.close();
 
     delete[] buf;
-    return val;
+
+    return crc.calc();
 }
 
 //
@@ -117,7 +113,6 @@ void TransferTRX::update(const unsigned long ms)
 
 void TransferTRX::update_recv()
 {
-    if(_retrunAck) { post_ack(_addr); _retrunAck = false; }
 }
 
 void TransferTRX::update_send()
@@ -166,7 +161,9 @@ void TransferTRX::update_send()
     pl.bufSize = len;
     auto prev = _sequence;
     _sequence = postReliable(_addr, pl);
+
     M5_LOGV("posted data: %llu", _sequence);
+
     if(!_sequence) { _sequence = prev; }
     _length = len;
 }
@@ -201,7 +198,7 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
             {
                 _state = Status::Recv;
                 _startTime = millis();
-                _retrunAck = true;
+                post_ack(addr);
             }
             else
             {
@@ -225,7 +222,7 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
                 M5_LOGE("Failed to write %lu/%lu", len, pl->bufSize);
                 // TODO;retry
             }
-            _retrunAck = true;
+            post_ack(addr);
             
             _length = pl->bufSize;
             _progress += len;

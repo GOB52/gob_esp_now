@@ -30,8 +30,9 @@ constexpr uint8_t BUTTON_TRANSCEIVER_ID = 1;
 
 MACAddress devices[] =
 {
-    MACAddress(DEVICE_A),
+    //    MACAddress(DEVICE_A),
     MACAddress(DEVICE_B),
+    MACAddress(DEVICE_C),
 };
 MACAddress target;
 ButtonTRX  buttonTRX(BUTTON_TRANSCEIVER_ID);
@@ -40,7 +41,6 @@ auto& lcd = M5.Display;
 goblib::UnifiedButton unifiedButton;
 bool failed{};
 
-#if 0
 const char* button_state_string[] =
 {
     "nochange ",
@@ -52,7 +52,6 @@ const char* bstr(const m5::Button_Class::button_state_t s)
 {
     return button_state_string[(uint8_t)s];
 }
-#endif
 //
 }
 
@@ -106,12 +105,13 @@ void setup()
         while(true) { delay(1000); }
     }
 
-#if 0
+#if 1
     auto cfg = comm.config();
     cfg.retransmissionTimeout = 300;
     cfg.cumulativeAckTimeout = 100;
     cfg.maxRetrans = 4;
-    cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
+    cfg.nullSegmentTimeout = 5*1000; // 0 means no use heartbeat.
+    cfg.update_priority = 0; // Need to call Communicator::update explicitly if 0
     comm.begin(APP_ID, cfg);
 #else
     comm.begin(APP_ID);
@@ -131,28 +131,34 @@ void setup()
 
 void loop()
 {
+    static int btn{ (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2) };
+    
     bool dirty{};
     auto& comm = Communicator::instance();
-    
+
     M5.update();
     unifiedButton.update();
 
-    // Starts when any key is pressed or received from the other device.
-    if(M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnC.isPressed())
-    {
-        buttonTRX.begin();
-    }
-    if(M5.BtnPWR.wasClicked())
-    {
-        M5_LOGI("%s", comm.debugInfo().c_str());
-    }
+    int now = (M5.BtnA.isPressed()) | (M5.BtnB.isPressed() << 1) | (M5.BtnC.isPressed() << 2);
+    if(now) { buttonTRX.begin(); } // Starts when any key is pressed or received from the other device.
+
+    if(M5.BtnPWR.wasClicked()) { M5_LOGI("%s", comm.debugInfo().c_str()); }
+    
+    comm.update(); // Explicit call
+    unifiedButton.draw(dirty);
 
     if(failed) { return; }
-
-    // Post my button status if TRX has begun.
-    buttonTRX.postReliable(target, M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed());
-
-    unifiedButton.draw(dirty);
+    
+    // Send if button status changed
+    // (If there are too many transmissions, the other party will not be able to receive and process them in time)
+    if(now != btn)
+    {
+        btn = now;
+        if(!buttonTRX.postReliable(target, M5.BtnA.isPressed(), M5.BtnB.isPressed(), M5.BtnC.isPressed()))
+        {
+            M5_LOGE("Failed to post btn");
+        }
+    }
 
     // Can get the other device's button state like M5.BtnX
     auto& a = buttonTRX.BtnA(target);
@@ -161,21 +167,21 @@ void loop()
 
     lcd.setCursor(0,0);
     lcd.printf("%s Heap:%u\n", buttonTRX.enabled() ? "COMM" : "NONE", esp_get_free_heap_size());
-    lcd.printf("  Self:%s\n", Communicator::instance().address().toString(true).c_str());
+    lcd.printf("  Self:%s\n", comm.address().toString(true).c_str());
     lcd.printf("Target:%s\n", target.toString(true).c_str());
 
     // Print button status that received from target
-    lcd.setCursor(0,96);
-    /*
-    lcd.printf(" BtnA: %s\n", bstr(a.getState()));
-    lcd.printf(" BtnB: %s\n", bstr(b.getState()));
-    lcd.printf(" BtnC: %s\n", bstr(c.getState()));
-    */
-    lcd.printf(" A: P:%dR:%dH:%dWC:%dWDC:%d\n",
+    lcd.setCursor(0,104);
+#if 0
+    lcd.printf("A:%u/%s\n", a.lastChange(), bstr(a.getState()));
+    lcd.printf("B:%u/%s\n", b.lastChange(), bstr(b.getState()));
+    lcd.printf("C:%u/%s\n", c.lastChange(), bstr(c.getState()));
+#else
+    lcd.printf("A)P:%dR:%dH:%dWC:%dWDC:%d\n",
                a.isPressed(), a.isReleased(), a.isHolding(), a.wasClicked(), a.wasDoubleClicked());
-    lcd.printf(" B: P:%dR:%dH:%dWC:%dWDC:%d\n",
+    lcd.printf("B)P:%dR:%dH:%dWC:%dWDC:%d\n",
                b.isPressed(), b.isReleased(), b.isHolding(), b.wasClicked(), b.wasDoubleClicked());
-    lcd.printf(" C: P:%dR:%dH:%dWC:%dWDC:%d\n",
+    lcd.printf("C)P:%dR:%dH:%dWC:%dWDC:%d\n",
                c.isPressed(), c.isReleased(), c.isHolding(), c.wasClicked(), c.wasDoubleClicked());
-
+#endif
 }

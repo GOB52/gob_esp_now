@@ -5,6 +5,7 @@
 #include "gob_esp_now.hpp"
 #include "internal/gob_esp_now_log.hpp"
 #include "internal/gob_systemTRX.hpp"
+#include "internal/gob_esp_now_utility.hpp"
 #include <esp32-hal.h> // millis
 #include <ctime>
 #include <cstdio>
@@ -195,6 +196,8 @@ Communicator:: Communicator()
 
     _permitToSend = xQueueCreate(1, 0U);
     assert(_permitToSend);
+    _postedAny = xQueueCreate(1, 0U);
+    assert(_postedAny);
     
     _addr.get(ESP_MAC_WIFI_STA);
     _sysTRX = new SystemTRX();
@@ -248,11 +251,11 @@ bool Communicator::begin(const uint8_t app_id, const config_t& cfg)
     if(_config.update_priority)
     {
         xTaskCreateUniversal(update_task, "gen_update",
-                         _config.task_stack_size, this, _config.update_priority, &_update_task, _config.update_core);
+                             _config.task_stack_size, this, _config.update_priority, &_update_task, _config.update_core);
     }
     
     _began = (_config.update_priority ? _update_task != nullptr : true) && _receive_task && _receive_queue;
-
+    //_began = (_config.update_priority ? _update_task != nullptr : true);
     if(!_began) { end(); }
     return _began;
 }
@@ -260,6 +263,7 @@ bool Communicator::begin(const uint8_t app_id, const config_t& cfg)
 void Communicator::end()
 {
     lock_guard _(_sem);
+
     _began = false;
     _transceivers.clear();
     _transceivers.push_back(_sysTRX);
@@ -276,90 +280,84 @@ void Communicator::end()
 
 void Communicator::update()
 {
+    lock_guard _(_sem);
     if(!_began) { return; }
 
-    // Initialized with the value at begin()
-    static auto cat = _config.cumulativeAckTimeout;
-    static auto mca = _config.maxCumAck;
-
+    ++_update_count;
+    
     auto ms = millis();
     unsigned long startTime{};
     bool sent{};
 
+    // Remove acked data
+    // If we don't do it here, the TRX update will make it easier to overflow the posted data.
+    for(auto& q : _queue) { remove_acked(q.first, q.second); }
+
+    // Update transceivers
+    for(auto& t : _transceivers)
     {
-        lock_guard _(_sem);
-
-        // Remove acked data
-        // If we don't do it here, the TRX update will make it easier to overflow the posted data.
-        for(auto& q : _queue) { remove_acked(q.first, q.second); }
-
-        // Update transceivers
-
-        for(auto& t : _transceivers)
+        t->with_lock([this, &t, &ms]
         {
-            t->with_lock([this, &t, &ms]()
-            {
-                t->_update(ms, cat, mca);
-                t->update(ms);
-            });
-        }
+            t->_update(ms, this->_config.cumulativeAckTimeout, this->_config.maxCumAck);
+            t->update(ms);
+        });
+    }
 
-        // Detect communication failure
-        for(auto& ss : _state)
+    // Detect communication failure
+    for(auto& ss : _state)
+    {
+        if(_config.maxRetrans && ss.second.retry > _config.maxRetrans)
         {
-            if(_config.maxRetrans && ss.second.retry > _config.maxRetrans)
-            {
-                LIB_LOGD("<Exceeded retry count>");
-                MACAddress copy(ss.first);
-                notify(Notify::ConnectionLost, &copy); // Passing ss.first is disabled inside notify, so copy
-            }
+            LIB_LOGE("<Exceeded retry count>");
+            MACAddress copy(ss.first);
+            notify(Notify::ConnectionLost, &copy); // Passing ss.first is disabled inside notify, so copy
         }
+    }
     
-        // Send if exists queue (Order by MACAddresss ASC)
-        // first : MACAddress
-        // second : packet
-        for(auto& q : _queue)
+    // Send if exists queue (Order by MACAddresss ASC)
+    // first : MACAddress
+    // second : packet
+    for(auto& q : _queue)
+    {
+        if(q.second.empty() || !_state.count(q.first)) { continue; }
+        // Send / resend
+        if(_state[q.first].state == State::None ||
+           (/*_state[q.first].state != State::None &&*/
+               ms > _state[q.first].sentTime + _config.retransmissionTimeout))
         {
-            if(q.second.empty() || !_state.count(q.first)) { continue; }
-            // Send / resend
-            if(_state[q.first].state == State::None ||
-               (/*_state[q.first].state != State::None &&*/
-                   ms > _state[q.first].sentTime + _config.retransmissionTimeout))
-            {
-                // TODO : realy need it?
-                if(!remove_acked(q.first, q.second)) { continue; }
+            // TODO : realy need it?
+            if(!remove_acked(q.first, q.second)) { continue; }
 
-                LIB_LOGD("-- %s:%u:[%s]",
-                         _state[q.first].state == State::None ? "Send" : "Resend",
-                         _state[q.first].retry,q.first.toString().c_str());
+            LIB_LOGD("-- %s:%u:[%s]",
+                     _state[q.first].state == State::None ? "Send" : "Resend",
+                     _state[q.first].retry,q.first.toString().c_str());
 
-                startTime = micros();
-                sent = send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second);
-                if(!sent) { ++_state[q.first].retry; continue; }
+            startTime = micros();
+            sent = send_esp_now((bool)q.first ? q.first.data() : nullptr, q.second);
+            if(!sent) { ++_state[q.first].retry; continue; }
 
-                if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
-                else { ++_state[q.first].retry; }
+            if(_state[q.first].state == State::None) { _state[q.first].retry = 0; }
+            else { ++_state[q.first].retry; }
 #if 1
-                // Wait called callback_onSent
-                xSemaphoreGiveRecursive(_sem);
-                xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
-                xSemaphoreTakeRecursive(_sem, portMAX_DELAY);
-                auto oneTime = micros() - startTime;
-                ++_sentCount;
-                _time += oneTime;
-                _minTime = std::min(oneTime, _minTime);
-                _maxTime = std::max(oneTime, _maxTime);
+            // Wait called callback_onSent
+            xSemaphoreGiveRecursive(_sem);
+            while(xQueueReceive(_permitToSend, nullptr, portMAX_DELAY) != pdTRUE);
+            xSemaphoreTakeRecursive(_sem, portMAX_DELAY);
+            auto oneTime = micros() - startTime;
+            ++_sentCount;
+            _time += oneTime;
+            _minTime = std::min(oneTime, _minTime);
+            _maxTime = std::max(oneTime, _maxTime);
 #else
-                break;
+            break;
 #endif
-            }
         }
     }
 #if 0
     // Wait called callback_onSent
     if(sent)
     {
-        xQueueReceive(_permitToSend, nullptr, portMAX_DELAY);
+        while(xQueueReceive(_permitToSend, nullptr, portMAX_DELAY) != pdTRUE);
         auto oneTime = micros() - startTime;
         ++_sentCount;
         _time += oneTime;
@@ -367,11 +365,9 @@ void Communicator::update()
         _maxTime = std::max(oneTime, _maxTime);
     }
 #endif
-    
-    lock_guard _(_sem);
+
     // Detect communication failures and heartbeat
     if(!_config.nullSegmentTimeout) { return; }
-
     for(auto& ss : _state)
     {
         if(!ss.first || ss.first.isMulticast()) { continue; }
@@ -728,6 +724,8 @@ void Communicator::callback_onSent(const uint8_t *peer_addr, esp_now_send_status
 void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t status)
 {
     bool succeed{status == ESP_NOW_SEND_SUCCESS};
+
+    //LIB_LOGE("<%s>", status ? "FAILED" : "SUCC");
     if(!succeed) { LIB_LOGW("FAILED:%s", addr.toString().c_str()); }
 
     {
@@ -759,20 +757,21 @@ void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* d
        || ch->app_id != comm._app_id) { LIB_LOGE("Illegal data"); return; }
 
 
+#if 1
     RecvQueueData rqd = { MACAddress(peer_addr), {}, (uint8_t)length };
     memcpy(rqd.buf, data, length);
     if(xQueueSend(comm._receive_queue, &rqd, 0) != pdPASS)
     {
-        LIB_LOGE("Faile to send Queue");
+        LIB_LOGE(">>> CAUTION << "
+                 "Queues are overflowing because there are not enough."
+                 "Increase the number of queues or adjust the communication frequency.");
     }
-    
-    
-    #if 0
+#else
     MACAddress addr(peer_addr);
     if(esp_now_is_peer_exist(peer_addr)) { comm.onReceive(addr, data, length); }
     // Data probably from broadcast communication (no peers registered yet)
     else                                 { comm.onReceiveNotRegistered(addr, data, length); }
-    #endif
+#endif
 }
 
 void Communicator::onReceiveNotRegistered(const MACAddress& addr, const uint8_t* data, const uint8_t length)
@@ -785,14 +784,8 @@ void Communicator::onReceiveNotRegistered(const MACAddress& addr, const uint8_t*
     while(cnt--)
     {
         auto th = (const TransceiverHeader*)data;
-        if(th->tid == 0) // system?
-        {
-            _sysTRX->on_receive(addr, th);
-        }
-        else
-        {
-            LIB_LOGW("Reject data from unregistered peers %s:%u", addr.toString().c_str(), th->tid);
-        }
+        if(th->tid == 0) { _sysTRX->on_receive(addr, th); }
+        else { LIB_LOGW("Reject data from unregistered peers %s:%u", addr.toString().c_str(), th->tid); }
         data += th->size;
     }
 }
@@ -813,6 +806,8 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     LIB_LOGD("---- RECV:[%s]", addr.toString().c_str());
 
     lock_guard _(_sem);
+
+    ++_receive_count;
     
     auto ms = millis();
     _state[addr].recvTime = ms;
@@ -906,21 +901,21 @@ void Communicator::update_task(void* arg)
         comm->update();
         // Do not get stuck in WDT and ensure that processing is passed on to lower priority tasks.
         if(cfg.update_core == 0 || cfg.update_priority > 1) { delay(1); }
+        else {  taskYIELD(); } // Provide execution opportunities for other tasks of the same priority
     }
 }
 
 void Communicator::receive_task(void* arg)
 {
     Communicator* comm = (Communicator*)arg;
-    config_t cfg = comm->config();
+    //config_t cfg = comm->config();
     RecvQueueData data;
-    
-    for(;;)
+    // If there is nothing in the Queue, the process moves to another task (include lower priority),
+    // so unlike update_task, no explicit delay is called.
+    while(xQueueReceive(comm->_receive_queue, &data, portMAX_DELAY) == pdTRUE)
     {
-        // If there is nothing in the Queue, the process moves to another task,
-        // so unlike update_task, no explicit delay is called.
-        xQueueReceive(comm->_receive_queue, &data, portMAX_DELAY);
         comm->onReceive(data.addr, data.buf, data.size);
+        taskYIELD(); // Provide execution opportunities for other tasks of the same priority
     }
 }
 

@@ -17,8 +17,8 @@
   e.g. #define DEVICE_A "11:22:33:44:55"
   *** WARNING Either one must be CoreS3. ***
 */
-#if !defined(DEVICE_A)
-#error Need define DEVICE_A
+#if !defined(DEVICE_C)
+#error Need define DEVICE_C
 #endif
 #if !defined(DEVICE_B)
 #error Need define DEVICE_B
@@ -40,8 +40,8 @@ int jpeg_quality = JPEG_QUALITY;
 
 MACAddress devices[] =
 {
-    MACAddress(DEVICE_A),
-    //MACAddress(DEVICE_B),
+    //MACAddress(DEVICE_A),
+    MACAddress(DEVICE_B),
     MACAddress(DEVICE_C),
 };
 MACAddress target;
@@ -86,10 +86,8 @@ camera_config_t camera_config =
     .pixel_format = PIXFORMAT_RGB565,
     .frame_size   = FRAMESIZE_QVGA,
     .jpeg_quality = 0,
-    //x.fb_count     = 1,
     .fb_count     = 2,
     .fb_location  = CAMERA_FB_IN_PSRAM,
-    //.fb_location  = CAMERA_FB_IN_DRAM,
     .grab_mode    = CAMERA_GRAB_WHEN_EMPTY,
     .sccb_i2c_port = -1,
 };
@@ -177,7 +175,6 @@ void setup()
     cfg.retransmissionTimeout = 300;
     cfg.cumulativeAckTimeout = 100;
     cfg.maxRetrans = 4;
-    //cfg.nullSegmentTimeout = 1000 * 5;
     cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
 
     comm.begin(APP_ID, cfg);
@@ -192,7 +189,7 @@ void setup()
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
 
-    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
+    //    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
 }
 
 void send_loop()
@@ -286,7 +283,6 @@ void recv_loop()
         cnt = 0;
     }
 }
-
 
 void idle_loop()
 {

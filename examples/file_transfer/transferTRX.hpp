@@ -110,7 +110,6 @@ class TransferTRX : public TRX
     unsigned long _startTime{}, _endTime{};
 
     Status _state{None};
-    bool _retrunAck{};
 
     String _dir{"/"}; // for recv
     String _path;
