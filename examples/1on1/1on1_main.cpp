@@ -30,9 +30,8 @@ constexpr uint8_t BUTTON_TRANSCEIVER_ID = 1;
 
 MACAddress devices[] =
 {
-    //    MACAddress(DEVICE_A),
+    MACAddress(DEVICE_A),
     MACAddress(DEVICE_B),
-    MACAddress(DEVICE_C),
 };
 MACAddress target;
 ButtonTRX  buttonTRX(BUTTON_TRANSCEIVER_ID);
