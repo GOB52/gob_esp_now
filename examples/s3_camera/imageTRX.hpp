@@ -5,8 +5,7 @@
 #include <memory>
 
 //Unreliable communication if defined.
-//Speed is increased, but communication reliability is decreased.
-#define USING_UNRELIABLE
+//#define USING_UNRELIABLE
 
 using TRX = goblib::esp_now::Transceiver;
 
@@ -44,7 +43,6 @@ class ImageTRX : public TRX
 
     bool inProgress() const { return _state != None; }
 
-    //    uint8_t* buffer() const { return _buf.get(); }
     std::unique_ptr<uint8_t[]>& uptr() { return _buf; }
     size_t size() const { return _size; }
     
@@ -85,9 +83,8 @@ class ImageTRX : public TRX
     unsigned long _startTime{}, _endTime{};
 
     finished_callback_t _callback{};
-    
-    volatile Status _state{None};
-    bool _retrunAck{};
+    Status _state{None};
+    bool _valid{};
 };
 
 uint32_t calculateCRC32(const char* path);

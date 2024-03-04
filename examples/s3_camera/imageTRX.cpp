@@ -1,7 +1,7 @@
 
 #include <M5Unified.h>
 #include "imageTRX.hpp"
-#include <FastCRC.h>
+#include <CRC32.h>
 
 using goblib::esp_now::MACAddress;
 
@@ -32,8 +32,9 @@ bool ImageTRX::send(const MACAddress& addr, uint8_t* buf, const size_t sz)
 
     _buf.reset(buf);
     _size = sz;
-    FastCRC32 crc;
-    _crc32 = crc.crc32(buf, sz);
+    CRC32 crc;
+    crc.add(buf, sz);
+    _crc32 = crc.calc();
     _addr = addr;
 
     _progress = _length = 0;
@@ -84,12 +85,9 @@ void ImageTRX::update(const unsigned long ms)
 
 void ImageTRX::update_recv()
 {
-#if !defined(USING_UNRELIABLE)
-    if(_retrunAck) { post_ack(_addr); _retrunAck = false; }
-#endif
     if(_progress >= _size)
     {
-        if(_callback) { _callback(this, _state); }
+        if(_callback && _valid) { _callback(this, _state); }
         _state = Status::None;
     }
 }
@@ -143,9 +141,8 @@ void ImageTRX::update_send()
     pl.bufSize = len;
 
 #if !defined(USING_UNRELIABLE)
-    auto prev = _sequence;
     _sequence = postReliable(_addr, pl);
-    if(!_sequence) { _sequence = prev; len = 0; } // or abort?
+    if(!_sequence) { abort(); return; }
 #else
     if(!postUnreliable(_addr, pl))
     {
@@ -175,12 +172,15 @@ void ImageTRX::onReceive(const MACAddress& addr, const void* data, const uint8_t
             _size = pl->size;
             _crc32 = pl->crc32;
             _progress = _length = 0;
+            _valid = false;
 
             M5_LOGD("Stanby for incomming %lu : %x", _size, _crc32);
 
             _state = Status::Recv;
             _startTime = millis();
-            _retrunAck = true;
+#if !defined(USING_UNRELIABLE)
+            post_ack(addr);
+#endif
         }
         break;
     case 1: // Receive data block
@@ -191,8 +191,9 @@ void ImageTRX::onReceive(const MACAddress& addr, const void* data, const uint8_t
             }
 
             memcpy(_buf.get() + _progress, pl->buf, pl->bufSize);
-            _retrunAck = true;
-            
+#if !defined(USING_UNRELIABLE)
+            post_ack(addr);
+#endif            
             _length = pl->bufSize;
             _progress += _length;
 
@@ -201,13 +202,15 @@ void ImageTRX::onReceive(const MACAddress& addr, const void* data, const uint8_t
             if(_progress >= _size)
             {
                 _endTime = now;
-                FastCRC32 crc;
-                auto rcrc32 = crc.crc32(_buf.get(), _size);
+                CRC32 crc;
+                crc.add(_buf.get(), _size);
+                auto rcrc32 = crc.calc();
+                _valid = rcrc32 == _crc32;
                 if(rcrc32 != _crc32 || _progress != _size)
                 {
                     M5_LOGE("Invalid data %d/%d", rcrc32 != _crc32,  _progress != _size);
                 }
-                M5_LOGD("Finished %lu (%f) <%zu> CRC:%x", timeRequired(), transferedRate() * 100, _speed, rcrc32);
+                M5_LOGD("%d Finished %lu msec %lu bytes/sec CRC:%x", _valid, timeRequired(), _speed, rcrc32);
             }
         }
         break;

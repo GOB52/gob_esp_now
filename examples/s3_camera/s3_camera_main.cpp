@@ -9,7 +9,6 @@
 #include <esp_camera.h>
 #include "MainClass.h"
 #include "imageTRX.hpp"
-#include <queue>
 
 /*
   WARNING
@@ -17,11 +16,11 @@
   e.g. #define DEVICE_A "11:22:33:44:55"
   *** WARNING Either one must be CoreS3. ***
 */
+#if !defined(DEVICE_A)
+#error Need define DEVICE_A
+#endif
 #if !defined(DEVICE_C)
 #error Need define DEVICE_C
-#endif
-#if !defined(DEVICE_B)
-#error Need define DEVICE_B
 #endif
 
 using namespace goblib::esp_now;
@@ -40,8 +39,7 @@ int jpeg_quality = JPEG_QUALITY;
 
 MACAddress devices[] =
 {
-    //MACAddress(DEVICE_A),
-    MACAddress(DEVICE_B),
+    MACAddress(DEVICE_A),
     MACAddress(DEVICE_C),
 };
 MACAddress target;
@@ -54,10 +52,10 @@ MainClass decoder;
 
 struct Image
 {
-    std::unique_ptr<uint8_t[]> ptr;
+    uint8_t* ptr;
     size_t size;
 };
-std::queue<Image> imageQueue; // For receiver
+QueueHandle_t received;
 
 enum Mode : uint8_t { Idle, Send, Recv, Failed };
 Mode mode{Idle};
@@ -84,7 +82,13 @@ camera_config_t camera_config =
     .ledc_timer   = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
     .pixel_format = PIXFORMAT_RGB565,
-    .frame_size   = FRAMESIZE_QVGA,
+
+    // Smaller frame_size improves FPS
+    // (See also https://github.com/espressif/esp32-camera/blob/master/driver/include/sensor.h)
+    .frame_size   = FRAMESIZE_QVGA,  // 320x240  about 10 FPS
+    //.frame_size   = FRAMESIZE_HQVGA, // 240x176 about 15 FPS
+    //.frame_size   = FRAMESIZE_QQVGA, // 160x120 about 20 FPS
+
     .jpeg_quality = 0,
     .fb_count     = 2,
     .fb_location  = CAMERA_FB_IN_PSRAM,
@@ -103,7 +107,10 @@ void trx_callback(ImageTRX* trx, const ImageTRX::Status s)
         trx->purge();
         break;
     case ImageTRX::Recv:
-        imageQueue.emplace(Image{std::move(trx->uptr()), trx->size()});
+        {
+            Image img{trx->uptr().release(), trx->size()};
+            xQueueSend(received, &img, 0);
+        }
         break;
     default: break;
     }
@@ -122,29 +129,14 @@ void comm_callback(const Notify notify, const void* arg)
     }
 }
 
-// Communicator task
-void comm_task(void*)
-{
-    auto& comm = Communicator::instance();
-    for(;;)
-    {
-        comm.update();
-        delay(1);
-    }
-    // NOT REACHED
-    //comm.end();
-}
 void setup()
 {
-    esp_log_level_set("*", ESP_LOG_DEBUG);
-
     M5_LOGI("Heap:%u", esp_get_free_heap_size());
     M5.begin();
     unifiedButton.begin(&lcd);
 
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
 
     auto before = esp_get_free_heap_size();
 
@@ -172,11 +164,7 @@ void setup()
     }
     
     auto cfg = comm.config();
-    cfg.retransmissionTimeout = 300;
-    cfg.cumulativeAckTimeout = 100;
-    cfg.maxRetrans = 4;
     cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
-
     comm.begin(APP_ID, cfg);
     
     auto after = esp_get_free_heap_size();
@@ -185,11 +173,12 @@ void setup()
     esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
     M5_LOGI("%s", comm.debugInfo().c_str());
 
+    received = xQueueCreate(2, sizeof(Image));
+    assert(received);
+    
     lcd.setFont(&fonts::Font4);
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
-
-    //    xTaskCreateUniversal(comm_task, "comm", 1024 * 8, nullptr, 2 /*priority */, nullptr, 1 /* core */);
 }
 
 void send_loop()
@@ -198,43 +187,35 @@ void send_loop()
     static unsigned long tm = millis();
 
     auto fb = esp_camera_fb_get();
-    
     if(fb)
     {
         size_t jlen{};
         uint8_t* jbuf{};
-        
-#if !defined(USING_UNRELIABLE)
-        if(!imageTRX.inProgress())
-#endif
+
+        // RGB565 to JPEG
+        // Note that increasing quality increases data volume.
+        if(frame2jpg(fb, jpeg_quality, &jbuf, &jlen))
         {
-            // RGB565 to JPEG
-            // Note that increasing quality increases data volume.
-            if(frame2jpg(fb, jpeg_quality, &jbuf, &jlen))
+#if 0
+            // trx hold the jpeg buffer if sended
+            if(imageTRX.send(target, jbuf, jlen))
             {
-                // trx hold the jpeg buffer if sended
-                if(imageTRX.send(target, jbuf, jlen))
-                {
-                    M5_LOGD("Send");
-                    ++scnt;
-                }
-                else
-                {
-                    free(jbuf);
-                    M5_LOGD("skip ");
-                }
+                ++scnt;
             }
             else
             {
-                M5_LOGE("Failed to frame2jpg");
+                // TRX is busy, try next chance and free memory.
+                free(jbuf);
             }
+#else            
+            while(!imageTRX.send(target, jbuf, jlen)) { delay(1); } // If BUSY, repeat until transmission is complete.
+            ++scnt;
+#endif
         }
-#if !defined(USING_UNRELIABLE)
         else
         {
-            M5_LOGD("Skip");
+            M5_LOGE("Failed to frame2jpg");
         }
-#endif
         esp_camera_fb_return(fb);
         ++ccnt;
     }
@@ -253,8 +234,14 @@ void send_loop()
     }
     lcd.setCursor(0,0);
     lcd.printf("HEAP:%u\n", esp_get_free_heap_size());
-    lcd.printf("CFPS:%02u SFPS:%02u\n", cfps, sfps);
-    lcd.printf("JPEG:%02d", jpeg_quality);
+    //lcd.printf("CFPS:%02u SFPS:%02u\n", cfps, sfps);
+    lcd.printf("SFPS:%02u\n", sfps);
+    lcd.printf("JPEG:%02d\n", jpeg_quality);
+#if defined(USING_UNRELIABLE)
+    lcd.printf("UNRELIABLE");
+#else
+    lcd.printf("RELIABLE");
+#endif    
     unifiedButton.draw();
 }
 
@@ -262,15 +249,16 @@ void recv_loop()
 {
     static uint32_t cnt{}, fps{};
     static unsigned long tm = millis();
-
+    Image img;
+    
     // Available queue?
-    if(!imageQueue.empty())
+    if(xQueueReceive(received, &img, portMAX_DELAY) == pdPASS)
     {
-        Image img = std::move(imageQueue.front()); // queue has a unique_ptr.
-        imageQueue.pop();
         ++cnt;
-        decoder.drawJpg(img.ptr.get(), img.size); // Using Core0/1 for rendering
+        decoder.drawJpg(img.ptr, img.size); // Using Core0/1 for rendering
+        free(img.ptr);
     }
+    
     auto now = millis();
     if(now - tm >= 1000)
     {
