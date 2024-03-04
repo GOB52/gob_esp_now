@@ -1,25 +1,30 @@
-# Example 1on1
+# Example file_transfer
 
 [日本語](#概要)
 
 ## Overview
 
-This is a sample of transmission of button A/B/C status between two M5Stack devices.  
-The screen displays the button status of the receiving device.  
-When the button on either device is pressed, transmission and reception begin.
+This sample transfers files on an SD card between two M5STack devices.  
+Press the A button on the source M5Stack (for CoreS3, press the left 1/3 button on the screen) to start transfer.  
+The transfer speed is about 50000 bytes/sec, depending on the communication status.  
+The transferred file will be saved in the root of the receiver device's SD card.
 
+## Prepare files
+Prepare the following files in /tmp of each SD card.  
+The size of the file can be arbitrary, but it is better not to make it too large (because it will take a long time to transfer the file).  
+I used the following command to create the file.
+
+```sh
+head -c 1250000 /dev/urandom > /tmp/dummy_10Mbps.txt
+         [size]                 [filename]
 ```
-A)P:0R:1H:0WC:0WDC:0
-B)P:0R:1H:0WC:0WDC:0
-C)P:0R:1H:0WC:0WDC:0
-```
-|Character|Description|
+|Filename|Size|
 |---|---|
-|P|isPressed?|
-|R|isReleased?|
-|H|isHolding?|
-|WC|wasClicked?|
-|WDC|wasDoubleClicked?|
+|dummy\_1Mbps.txt  |   125000|
+|dummy\_512K.txt   |   524288|
+|dummy\_1M.txt     |  1048576|
+|dummy\_10Mbps.txt |  1250000|
+|dummy\_10M.txt    | 10485760|
 
 ## MAC Address settings
 
@@ -67,22 +72,27 @@ Hard resetting via RTS pin...
 ---
 
 ## 概要
-2台の M5Stack 間でボタンA/B/Cの状態を相互に送信するサンプルです。  
-画面には受信した相手のボタン状態が表示されます。  
-どちらかのデバイスのボタンが押されたら送受信が開始されます。
+二台の M5Stack 間で、 SD カード内のファイルを転送するサンプルです。  
+転送元の M5Stack の A ボタン押下(CoreS3 の場合は画面左 1/3 押下) で転送を開始します。  
+通信状態にもよりますが、50000 bytes/sec 程度の転送速度です。  
+転送されたファイルは、相手の SD カードのルートに保存されます。
 
+## ファイルの準備
+それぞれの SD カードの /tmp に以下のファイルを用意します。  
+ファイルサイズは適当でも構いませんが、あまり大きくしない方が良いでしょう(転送時間がかかるため)  
+私は以下のコマンドにてファイルを作成しました。
+
+```sh
+head -c 1250000 /dev/urandom > /tmp/dummy_10Mbps.txt
+         [size]                 [filename]
 ```
-A)P:0R:1H:0WC:0WDC:0
-B)P:0R:1H:0WC:0WDC:0
-C)P:0R:1H:0WC:0WDC:0
-```
-|Character|Description|
+|Filename|Size|
 |---|---|
-|P|isPressed?|
-|R|isReleased?|
-|H|isHolding?|
-|WC|wasClicked?|
-|WDC|wasDoubleClicked?|
+|dummy\_1Mbps.txt  |   125000|
+|dummy\_512K.txt   |   524288|
+|dummy\_1M.txt     |  1048576|
+|dummy\_10Mbps.txt |  1250000|
+|dummy\_10M.txt    | 10485760|
 
 ## MAC Addressの指定
 platfromio.ini の修正が必要です。
@@ -93,7 +103,7 @@ build_flags =
   -DDEVICE_A="\"30:c6:f7:1d:1c:cc\""
   -DDEVICE_B="\"a4:cf:12:6d:87:1c\""
 ```
-それぞれに自分の M5Stack デバイスのアドレスを記入してください。  
+それぞれに自分のM5Stackデバイスのアドレスを記入してください。  
 DEVICE\_A と DEVICE\_B で指定されたアドレスを持つ M5Stack 同士で通信を行います。
 
 ### MAC Address の調べ方
@@ -125,4 +135,3 @@ Stub running...
 MAC: 30:c6:f7:1d:1c:cc
 Hard resetting via RTS pin...
 ```
-

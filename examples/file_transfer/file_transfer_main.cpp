@@ -278,6 +278,7 @@ void loop()
             });
             break;
         case TransferTRX::Status::Send:
+            file_crc = 0;
             transfer.bus_lock([]()
             {
                 lcd.startWrite();
@@ -294,7 +295,7 @@ void loop()
             transfer.bus_lock([]()
             {
                 file_crc = calculateCRC32(transfer.path());
-                M5_LOGI("Recv crc:[%s] %x", transfer.path(), file_crc);
+                M5_LOGI("Received file [%s] CRC:%x", transfer.path(), file_crc);
             });
             dirty = true;
         }

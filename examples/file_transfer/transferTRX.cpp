@@ -187,7 +187,7 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
             _crc32 = pl->crc32;
             _progress = _length = 0;
 
-            M5_LOGI("Stanby for incomming [%s] %lu", _fname.c_str(), _size);
+            M5_LOGI("Stanby for incomming [%s] size:%lu CRC:%x", _fname.c_str(), _size, _crc32);
             
             _file = bus_lock([this]()
             {
@@ -238,7 +238,7 @@ void TransferTRX::onReceive(const MACAddress& addr, const void* data, const uint
                 _state = Status::None;
                 _endTime = now;
                 _speed = ((float)_size / timeRequired()) * 1000.f;
-                M5_LOGI("Finished %lu (%f) %lu CRC:%x", timeRequired(), transferedRate() * 100, _speed, _crc32);
+                M5_LOGI("Finished %lu msec %lu bytes/sec" , timeRequired(), _speed);
             }
             //
         }
