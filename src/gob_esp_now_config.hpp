@@ -9,7 +9,7 @@
 #define GOB_ESP_NOW_CONFIG_HPP
 
 #include <cstdint>
-#include <esp_now.h> // for ESP_NOW_MAX_DATA_LEN
+//#include <esp_now.h> // for ESP_NOW_MAX_DATA_LEN
 
 namespace goblib { namespace esp_now {
 
@@ -23,12 +23,12 @@ struct config_t
 {
     ///@name Communicator
     ///@{
-    uint8_t update_priority{1};     //!< @brief Priority of the update task. Zero means If zero, the user explicitly calls it.
-    uint8_t update_core{1};         //!< @brief CPU core on which the update task is executed
-    uint8_t receive_priority{2};    //!< @brief Priority of the receive task
-    uint8_t receive_core{1};        //!< @brief CPU core on which the receive task is executed
-    uint8_t receive_queue_size{2};  //!< @brief Size of FreeRTOS Queue
-    uint16_t task_stack_size{4096}; //!< @brief Size of the stack for task
+    uint8_t update_priority{1};       //!< @brief Priority of the update task. Zero means If zero, the user explicitly calls it.
+    uint8_t update_core{1};           //!< @brief CPU core on which the update task is executed
+    uint8_t receive_priority{2};      //!< @brief Priority of the receive task
+    uint8_t receive_core{1};          //!< @brief CPU core on which the receive task is executed
+    uint8_t receive_queue_size{2};    //!< @brief Size of FreeRTOS Queue
+    uint16_t task_stack_size{1024*3}; //!< @brief Size of the stack for task
     ///@}
 
     ///@name RUDP
@@ -37,7 +37,7 @@ struct config_t
     //uint8_t outstanding{}; //!< @brief  The maximum number of segments that should be sent without getting an acknowledgment. (as window size)
 
     //! @brief The maximum number of octets that can be received by the peer (Fixed ESP_NOW_MAX_DATA_LEN in this library)
-    uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN};
+    //uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN};
     //! @brief The timeout value for retransmission of unacknowledged packets
     uint16_t retransmissionTimeout{320};
 

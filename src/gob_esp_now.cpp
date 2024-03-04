@@ -731,8 +731,9 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     {
         lock_guard _(_sem);
         // Composite the remaining elements and those added to the queue between esp_send and the callback
-        //if(succeed)
+        if(succeed)
         {
+            // 成功時のみにしないと onlyACK without payload が削除されてしまう
             remove_not_need_resend(_lastSentQueue);
         }
         auto sz = _lastSentQueue.size();
@@ -822,7 +823,8 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                     LIB_LOGW("[Rejected[%u] P:%d %u/%llu(%llu)",
                              t->_tid,
                              th->hasPayload(),
-                             th->rudp.sequence, rs, rs % 256);
+                             th->rudp.sequence, rs, rs & 255);
+                    //LIB_LOGW("REJECT[%u] %lu %s", t->_tid, ms, t->debugInfo().c_str());
                 }
                 break;
             }

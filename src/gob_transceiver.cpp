@@ -222,18 +222,18 @@ void Transceiver::_update(const unsigned long ms, const uint8_t cumulativeAckTim
         auto rtm = pi.second.recvTime;
         if(rtm && ms > rtm + cumulativeAckTimeout)
         {
-            LIB_LOGE(">> ForceACK:Timeout");
+            LIB_LOGE(">>ForceACK:CAT");
             addrs.insert(pi.first);
             continue;
         }
         // Post ACK if the number of unrespond ACKs exceeds a certain number
-        if(!maxCumAck || pi.second.recvSeq > pi.second.sentAck + maxCumAck)
+        if(pi.second.recvSeq > pi.second.sentAck + maxCumAck)
         {
-            LIB_LOGE(">> FoeceACK:Cum");
+            LIB_LOGE(">>FoeceACK:MCA");
             addrs.insert(pi.first);
         }
     }
-    for(auto& addr : addrs) { post_ack(addr.data()); }
+    for(auto& addr : addrs) { post_ack(addr); }
 }
 
 void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th)
