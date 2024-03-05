@@ -144,7 +144,7 @@ bool initialize_esp_now()
 }
 
 // Remove that do not need to be resended
-bool remove_not_need_resend(std::vector<uint8_t>& packet)
+bool remove_not_need_resend(std::vector<uint8_t>& packet, const bool succeed)
 {
     if(packet.empty()) { return false; }
 
@@ -157,9 +157,9 @@ bool remove_not_need_resend(std::vector<uint8_t>& packet)
     while(cnt--)
     {
         auto th = (TransceiverHeader*)p;
-        // unreliable or only ACK with no payload
-        //        if(!th->isRUDP() || (th->onlyACK() && !th->hasPayload())
-        if(!th->isACK() || (th->onlyACK() && !th->hasPayload()) )
+        // Unreliable or
+        // only ACK with no payload if succeed
+        if(!th->isACK() || (succeed && (th->onlyACK() && !th->hasPayload())) )
         {
             --ch->count;
             ch->size -= th->size;
@@ -471,7 +471,7 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
 #if !defined(NDEBUG)
     if(isEnableDebug() && randf() < _debugSendLoss)
     {
-        remove_not_need_resend(packet);
+        remove_not_need_resend(packet, false);
         onSent(addr, ESP_NOW_SEND_FAIL);
         LIB_LOGD("[DF]:FailedS");
         return false;
@@ -480,7 +480,6 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
 #endif
     
     auto ret = esp_now_send(peer_addr, packet.data(), packet.size());
-    //    remove_not_need_resend(packet);
     if(ret != ESP_OK)
     {
         LIB_LOGE("Failed to esp_now_send %s 0x%x:%s", MACAddress(peer_addr).toString().c_str(), ret, err2cstr(ret));
@@ -731,11 +730,8 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
     {
         lock_guard _(_sem);
         // Composite the remaining elements and those added to the queue between esp_send and the callback
-        if(succeed)
-        {
-            // 成功時のみにしないと onlyACK without payload が削除されてしまう
-            remove_not_need_resend(_lastSentQueue);
-        }
+        remove_not_need_resend(_lastSentQueue, succeed);
+
         auto sz = _lastSentQueue.size();
         auto b = !_queue[addr].empty();
         _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
