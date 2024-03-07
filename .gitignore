@@ -31,8 +31,8 @@
 *.out
 *.app
 
-#Emacs
-\#*#
+#Emacs recentf
+.\#*
 
 #pio
 /.pio/
@@ -42,3 +42,8 @@
 
 # Doxygen
 /doc/html
+
+# 
+debug.cfg
+debug_custom.json
+*.svd
