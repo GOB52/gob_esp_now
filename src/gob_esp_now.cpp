@@ -290,7 +290,6 @@ void Communicator::update()
     bool sent{};
 
     // Remove acked data
-    // If we don't do it here, the TRX update will make it easier to overflow the posted data.
     for(auto& q : _queue) { remove_acked(q.first, q.second); }
 
     // Update transceivers
@@ -498,8 +497,8 @@ bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& 
 // Call with communicator locked.
 bool Communicator::remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet)
 {
-    if(packet.empty()) { return false; }
-    assert(packet.size() >= sizeof(CommunicatorHeader) && "illgal size");
+    //if(packet.empty()) { return false; }
+    if(packet.size() < sizeof(CommunicatorHeader)){ return false; }
 
     //LIB_LOGD(" -> packet:[%s]", packet_to_str(packet).c_str());
     auto p = packet.data();
@@ -558,14 +557,13 @@ void Communicator::reset_sent_state(const MACAddress& addr)
 // Call with communicator locked.
 void Communicator::notify(const Notify n, const void* arg)
 {
-    LIB_LOGW("%s", debugInfo().c_str());
-
+    //LIB_LOGW("%s", debugInfo().c_str());
     auto paddr = (const MACAddress*)arg;
     switch(n)
     {
     case Notify::Disconnect: // [[fallthrough]]
     case Notify::ConnectionLost:
-        LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
+        //LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
         unregisterPeer(*paddr);
         break;
     case Notify::Shookhands: break;

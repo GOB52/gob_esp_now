@@ -83,6 +83,8 @@ void SystemTRX::update(const unsigned long ms)
     auto it = _synInfo.begin();
     while(it != _synInfo.end())
     {
+        auto pi = peerInfo(it->_first);
+        assert(pi);
         switch(it->second.status)
         {
         case SynInfo::State::None: break;
@@ -138,7 +140,7 @@ void SystemTRX::update(const unsigned long ms)
             break;
         case SynInfo::State::PostACK:
             // Already posted force by parent class?
-            if(it->second.recvSeqSynAck && _peerInfo[it->first].sentAck >= it->second.recvSeqSynAck)
+            if(it->second.recvSeqSynAck && pi->sentAck >= it->second.recvSeqSynAck)
             {
                 LIB_LOGE("Already posted ACK");
                 it->second.status = SynInfo::State::Shookhand;
@@ -206,6 +208,9 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
     with_lock([this](const MACAddress& addr, const TransceiverHeader* th)
     {
         auto& comm = Communicator::instance();
+        auto pi = peerInfo(addr);
+        assert(pi);
+
         if(th->isSYN())
         {
             // Primary side
@@ -241,7 +246,7 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
                     _synInfo[addr].status = SynInfo::State::None;
                     return;
                 }
-                _synInfo[addr].recvSeqSynAck = _peerInfo[addr].recvSeq;
+                _synInfo[addr].recvSeqSynAck = pi->recvSeq;
                 
                 // TODO sequence.ack,ackseq....
                 comm.setRole(Role::Secondary);

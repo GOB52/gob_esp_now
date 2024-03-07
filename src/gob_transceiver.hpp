@@ -32,10 +32,8 @@ struct TransceiverHeader
     ///@name Properties
     ///@{
     inline bool isRUDP() const       { return (bool)rudp.flag; } //!< @brief is RUDP data?
-        inline bool isSYN() const        { return (rudp.flag & to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN ?
-        inline bool onlySYN() const      { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief only SYN?
-    //inline bool isSYN() const        { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN ?
-
+    inline bool isSYN() const        { return (rudp.flag & to_underlying(RUDP::Flag::SYN)); } //!< @brief is SYN ?
+    inline bool onlySYN() const      { return (rudp.flag == to_underlying(RUDP::Flag::SYN)); } //!< @brief only SYN?
     inline bool isRST() const        { return (rudp.flag & to_underlying(RUDP::Flag::RST)); } //!< @brief is RST?
     inline bool isACK() const        { return (rudp.flag & to_underlying(RUDP::Flag::ACK)); } //!< @brief is ACK?
     inline bool onlyACK() const      { return (rudp.flag == to_underlying(RUDP::Flag::ACK)); } //!< @brief only ACK?
@@ -56,6 +54,23 @@ struct TransceiverHeader
 class Transceiver
 {
   public:
+    ///@cond
+    struct PeerInfo
+    {
+        // ACK with payload
+        uint64_t sequence{};  // S
+        uint64_t recvSeq{};   // R (Sequence number received from the peer)
+        uint64_t recvAck{};   // R (ACKed number received from the peer)
+        uint64_t sentAck{};   // S Last sent ACKed number
+        // no payload
+        uint64_t ackSequence{}; // S
+        uint64_t recvAckSeq{};  // R
+        //
+        unsigned long recvTime{}; // R
+        bool needReturnACK{};     // R
+    } __attribute__((__packed__));
+    ///@endcond
+
     /*!
       @param tid Unique value for each transceiver (Other than 0)
       @note id also serves as priority (in ascending order)
@@ -72,6 +87,7 @@ class Transceiver
     ///@name Properties
     ///@{
     inline uint8_t identifier() const { return _tid; } //!< @brief Gets the identifier
+    inline const PeerInfo* peerInfo(const MACAddress& addr) const { return _peerInfo.count(addr) ? &_peerInfo.at(addr) : nullptr; }
     ///@}
 
     ///@name Delivered up to this sequence number?
@@ -238,23 +254,6 @@ class Transceiver
     {
         return delivered(restore_u64_earlier(_peerInfo[addr].sequence, seq), addr);
     }
-    
-    ///@cond
-    struct PeerInfo
-    {
-        // ACK with payload
-        uint64_t sequence{};  // S
-        uint64_t recvSeq{};   // R (Sequence number received from the peer)
-        uint64_t recvAck{};   // R (ACKed number received from the peer)
-        uint64_t sentAck{};   // S Last sent ACKed number
-        // no payload
-        uint64_t ackSequence{}; // S
-        uint64_t recvAckSeq{};  // R
-        //
-        unsigned long recvTime{}; // R
-        bool needReturnACK{};     // R
-    } __attribute__((__packed__));
-    ///@endcond
 
     // If derived, call the parent on_receive first!
     // Normally, an override of onReceive should do the trick.
@@ -264,11 +263,7 @@ class Transceiver
     Transceiver();
     void _update(const unsigned long ms, const uint8_t cat, const uint8_t mca);
 
-
-  protected:
     map_t<MACAddress, PeerInfo> _peerInfo;
-    
-  private:
     mutable SemaphoreHandle_t _sem{};
     uint8_t _tid{};    // Transceiver unique identifier (0 reserved for SystemTRX)
     friend class Communicator;
