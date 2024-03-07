@@ -83,7 +83,7 @@ void SystemTRX::update(const unsigned long ms)
     auto it = _synInfo.begin();
     while(it != _synInfo.end())
     {
-        auto pi = peerInfo(it->_first);
+        auto pi = peerInfo(it->first);
         assert(pi);
         switch(it->second.status)
         {
