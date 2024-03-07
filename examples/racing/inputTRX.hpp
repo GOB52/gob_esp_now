@@ -84,7 +84,6 @@ class InputTRX : public goblib::esp_now::Transceiver
   protected:
     virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length)
     {
-        LIB_LOGE("RECV");
         _received.push(*(const int*)data);
         _ackedSeq = peerInfo(addr)->recvAck;
     }

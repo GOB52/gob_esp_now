@@ -63,6 +63,7 @@ void configTime()
         M5_LOGE("Failed to connect WiFi");
         while(true) { delay(1000); }
     }
+    M5_LOGI("WiFi connected");
 
     configTzTime(posixTZ, ntp[0], ntp[1], ntp[2]);
     int32_t retry{10};    
@@ -1062,7 +1063,8 @@ static volatile int ghostcar_x; // ゴーストカー座標(ベストラップ�
 static volatile int ghostcar_y;
 static volatile uint32_t fpsCounter;
 static volatile uint32_t taskCounter{};
-uint32_t fps{}, tfps{};
+static volatile uint32_t postCounter{};
+uint32_t fps{}, tfps{}, pfps{};
 
 static uint32_t texture_palette_16x2x2[2][texture_palette_id_t::pal_max];
 
@@ -1812,15 +1814,13 @@ void gameTask(void*)
   {
     ++taskCounter;
     comm.update();
-    delay(1000/60);
+    delay(1);
     uint32_t msec = lgfx::millis() - msec_start;
-#if 1
     if ((input_count << 3) > msec)
     {
       lgfx::delay((input_count << 3) - msec);
       msec = lgfx::millis() - msec_start;
     }
-#endif
     ++input_count;
 
     M5.update();
@@ -2010,7 +2010,8 @@ void gameTask(void*)
         prev_sec = lap_sec;
         fps = fpsCounter;
         tfps = taskCounter;
-        fpsCounter = taskCounter = 0;
+        pfps = postCounter;
+        fpsCounter = taskCounter = postCounter = 0;
     }
     //static uint32_t ack{};
     //M5_LOGI(">>>> Send:ACK:%u %d", ack, player_steering_angle);
@@ -2027,18 +2028,19 @@ void gameTask(void*)
       return true;
     }))
     {
+      ++postCounter;
       if(!inputTRX.post(player_steering_angle)) { M5_LOGW("Failed to post"); }    // update car status
     }
     
 #if 1
-    snprintf(lap_str, sizeof(lap_str), "%c%d,%d %u %u",
+    snprintf(lap_str, sizeof(lap_str), "%c%d,%d %u %u %u",
              deviceId == 0 ? '*' : ' ',
              car[0].x >> 16, car[0].y >> 16,
-             tfps, fps);
-    snprintf(best_lap_str, sizeof(best_lap_str), "%c%d,%d %u %u",
+             tfps, pfps, fps);
+    snprintf(best_lap_str, sizeof(best_lap_str), "%c%d,%d %u %u %u",
              deviceId == 1 ? '*' : ' ',
              car[1].x >> 16, car[1].y >> 16,
-             tfps, fps);
+             tfps, pfps, fps);
 #endif
   }//for(;;)
 }
