@@ -9,7 +9,6 @@
 #include <array>
 #include <internal/gob_esp_now_log.hpp>
 
-// Since deque uses a lot of memory(Memory fragmentation also occurs), use a ring buffer instead
 template <typename T, size_t Capacity> class RingBuffer
 {
     static_assert(Capacity <= 255, "Capacity must be <= 255");
@@ -54,12 +53,12 @@ class InputTRX : public goblib::esp_now::Transceiver
 
     explicit InputTRX(const uint8_t tid) : goblib::esp_now::Transceiver(tid) {}
 
-    uint64_t available() const { return _ackedSeq > _poped ? _ackedSeq - _poped : 0; }
+    inline uint64_t acked() const { return _ackedSeq; }
+    inline uint64_t available() const { return _ackedSeq > _poped ? _ackedSeq - _poped : 0; }
+
     // Call if available
     std::pair<int, int> pop()
     {
-        //LIB_LOGE("%u:%u", _sent.size(), _received.size());
-
         int s = _sent.front();
         int r = _received.front();
         _sent.pop();

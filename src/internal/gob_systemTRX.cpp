@@ -84,79 +84,85 @@ void SystemTRX::update(const unsigned long ms)
     while(it != _synInfo.end())
     {
         auto pi = peerInfo(it->first);
-        assert(pi);
-        switch(it->second.status)
-        {
-        case SynInfo::State::None: break;
-            // Primary side
-        case SynInfo::State::PostSYNACK:
-            LIB_LOGD("Post SYNACK");
-            if(post_rudp(seq, it->first.data(), RUDP::Flag::SYN_ACK, &cfg, sizeof(cfg)))
+        if(pi)
+        { 
+            switch(it->second.status)
             {
-                it->second.tm = ms;
-                it->second.status = SynInfo::State::WaitACK;
-                it->second.sequence = seq;
-            }
-            else
-            {
-                LIB_LOGE("Failed to postSYNACK");
+            case SynInfo::State::None: break;
+                // Primary side
+            case SynInfo::State::PostSYNACK:
+                LIB_LOGD("Post SYNACK");
+                if(post_rudp(seq, it->first.data(), RUDP::Flag::SYN_ACK, &cfg, sizeof(cfg)))
+                {
+                    it->second.tm = ms;
+                    it->second.status = SynInfo::State::WaitACK;
+                    it->second.sequence = seq;
+                }
+                else
+                {
+                    LIB_LOGE("Failed to postSYNACK");
+                    it->second.status = SynInfo::State::None;
+                }
+                break;
+            case SynInfo::State::WaitACK:
+                if(delivered(it->second.sequence, it->first))
+                {
+                    LIB_LOGD("Recv ACK");
+                    it->second.status = SynInfo::State::Shookhand;
+                }
+                else if(ms - it->second.tm > SynInfo::TIMEOUT)
+                {
+                    LIB_LOGW("Wait ACK timeout");
+                    comm.unregisterPeer(it->first);
+                    it->second.status = SynInfo::State::None;
+                }
+                break;
+                // Secondary side
+            case SynInfo::State::PostSYN:
+                LIB_LOGD("Post SYN");
+                if(post_rudp(seq, it->first.data(), RUDP::Flag::SYN, &cfg, sizeof(cfg)))
+                {
+                    it->second.tm = ms;
+                    it->second.status = SynInfo::State::WaitSYNACK;
+                }
+                else
+                {
+                    LIB_LOGE("Failed to postSYN");
+                    it->second.status = SynInfo::State::None;
+                }
+                break;
+            case SynInfo::State::WaitSYNACK:
+                if(ms - it->second.tm > SynInfo::TIMEOUT)
+                {
+                    LIB_LOGW("Wait SYNACK timeout");
+                    comm.unregisterPeer(it->first);
+                    it->second.status = SynInfo::State::None;
+                }
+                break;
+            case SynInfo::State::PostACK:
+                // Already posted force by parent class?
+                if(it->second.recvSeqSynAck && pi->sentAck >= it->second.recvSeqSynAck)
+                {
+                    LIB_LOGE("Already posted ACK");
+                    it->second.status = SynInfo::State::Shookhand;
+                    break;
+                }
+                LIB_LOGD("Post ACK");
+                if(post_ack(it->first)) { it->second.status = SynInfo::State::Shookhand; }
+                else { LIB_LOGE("Failed to postACK"); }
+                break;
+
+            case SynInfo::State::Shookhand:
+                LIB_LOGE("Shookhand %s", it->first.toString().c_str());
+                comm.notify(Notify::Shookhands, &it->first);
                 it->second.status = SynInfo::State::None;
-            }
-            break;
-        case SynInfo::State::WaitACK:
-            if(delivered(it->second.sequence, it->first))
-            {
-                LIB_LOGD("Recv ACK");
-                it->second.status = SynInfo::State::Shookhand;
-            }
-            else if(ms - it->second.tm > SynInfo::TIMEOUT)
-            {
-                LIB_LOGW("Wait ACK timeout");
-                comm.unregisterPeer(it->first);
-                it->second.status = SynInfo::State::None;
-            }
-            break;
-            // Secondary side
-        case SynInfo::State::PostSYN:
-            LIB_LOGD("Post SYN");
-            if(post_rudp(seq, it->first.data(), RUDP::Flag::SYN, &cfg, sizeof(cfg)))
-            {
-                it->second.tm = ms;
-                it->second.status = SynInfo::State::WaitSYNACK;
-            }
-            else
-            {
-                LIB_LOGE("Failed to postSYN");
-                it->second.status = SynInfo::State::None;
-            }
-            break;
-        case SynInfo::State::WaitSYNACK:
-            if(ms - it->second.tm > SynInfo::TIMEOUT)
-            {
-                LIB_LOGW("Wait SYNACK timeout");
-                comm.unregisterPeer(it->first);
-                it->second.status = SynInfo::State::None;
-            }
-            break;
-        case SynInfo::State::PostACK:
-            // Already posted force by parent class?
-            if(it->second.recvSeqSynAck && pi->sentAck >= it->second.recvSeqSynAck)
-            {
-                LIB_LOGE("Already posted ACK");
-                it->second.status = SynInfo::State::Shookhand;
+                ++_handshaked;
                 break;
             }
-            LIB_LOGD("Post ACK");
-            if(post_ack(it->first)) { it->second.status = SynInfo::State::Shookhand; }
-            else { LIB_LOGE("Failed to postACK"); }
-            break;
-
-        case SynInfo::State::Shookhand:
-            LIB_LOGE("Shookhand %s", it->first.toString().c_str());
-            comm.notify(Notify::Shookhands, &it->first);
+        }
+        else
+        {
             it->second.status = SynInfo::State::None;
-            ++_handshaked;
-            break;
         }
         it = (it->second.status == SynInfo::State::None) ? _synInfo.erase(it) : std::next(it);
     }

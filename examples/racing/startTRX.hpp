@@ -6,6 +6,7 @@
 
 #include <gob_transceiver.hpp>
 #include <time.h>
+#include <internal/gob_esp_now_log.hpp>
 
 class StartTRX : public goblib::esp_now::Transceiver
 {
@@ -33,6 +34,7 @@ class StartTRX : public goblib::esp_now::Transceiver
   protected:
     virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length)
     {
+        LIB_LOGE("-- recv STRX");
         auto payload = (const Payload*)data;
         _payload = *payload;
         post_ack(addr);

@@ -243,19 +243,24 @@ bool Communicator::begin(const uint8_t app_id, const config_t& cfg)
         while(esp_now_fetch_peer(false, &info) == ESP_OK);
     }
 
-    _receive_queue = xQueueCreate(_config.receive_queue_size, sizeof(RecvQueueData));
-    xTaskCreateUniversal(receive_task, "gen_receive",
+    // If receive_priority is zero, Don't use receive queue and task.
+    if(_config.receive_priority)
+    {
+        LIB_LOGD("Ceate receive task");
+        _receive_queue = xQueueCreate(_config.receive_queue_size, sizeof(RecvQueueData));
+        xTaskCreateUniversal(receive_task, "gen_receive",
                          _config.task_stack_size, this, _config.receive_priority, &_receive_task, _config.receive_core);
-
+    }
     // If update_priority is zero, the user explicitly calls it.
     if(_config.update_priority)
     {
+        LIB_LOGD("Ceate update task");
         xTaskCreateUniversal(update_task, "gen_update",
                              _config.task_stack_size, this, _config.update_priority, &_update_task, _config.update_core);
     }
     
-    _began = (_config.update_priority ? _update_task != nullptr : true) && _receive_task && _receive_queue;
-    //_began = (_config.update_priority ? _update_task != nullptr : true);
+    _began = (_config.update_priority ? _update_task != nullptr : true)
+            && (_config.receive_priority ? (_receive_task != nullptr && _receive_queue != nullptr) : true);
     if(!_began) { end(); }
     return _began;
 }
@@ -752,19 +757,26 @@ void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* d
        || ch->app_id != comm._app_id) { LIB_LOGE("Illegal data"); return; }
 
 
-#if 1
-    RecvQueueData rqd = { MACAddress(peer_addr), {}, (uint8_t)length };
-    memcpy(rqd.buf, data, length);
-    if(xQueueSend(comm._receive_queue, &rqd, 0) != pdPASS)
-    {
-        LIB_LOGE(">>> CAUTION << "
-                 "Queues are overflowing because there are not enough."
-                 "Increase the number of queues or adjust the communication frequency.");
-    }
-#else
+    LIB_LOGE("[RECVCB]");
+    
     MACAddress addr(peer_addr);
-    comm.onReceive(addr, data, length);
-#endif
+    
+    if(comm._config.receive_priority)
+    {
+        RecvQueueData rqd = { addr, {}, (uint8_t)length };
+        memcpy(rqd.buf, data, length);
+        if(xQueueSend(comm._receive_queue, &rqd, 0) != pdPASS)
+        {
+            LIB_LOGE(">>> CAUTION << "
+                     "Queues are overflowing because there are not enough."
+                     "Increase the number of queues or adjust the communication frequency.");
+        }
+
+    }
+    else
+    {
+        comm.onReceive(addr, data, length);
+    }
 }
 
 void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length)

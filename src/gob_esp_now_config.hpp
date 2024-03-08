@@ -23,9 +23,9 @@ struct config_t
 {
     ///@name Communicator
     ///@{
-    uint8_t update_priority{1};       //!< @brief Priority of the update task. Zero means If zero, the user explicitly calls it.
+    uint8_t update_priority{1};       //!< @brief Priority of the update task. If zero, the user explicitly calls it.
     uint8_t update_core{1};           //!< @brief CPU core on which the update task is executed
-    uint8_t receive_priority{2};      //!< @brief Priority of the receive task
+    uint8_t receive_priority{2};      //!< @brief Priority of the receive task. If zero, Don't use receive queue.
     uint8_t receive_core{1};          //!< @brief CPU core on which the receive task is executed
     uint8_t receive_queue_size{2};    //!< @brief Size of FreeRTOS Queue
     uint16_t task_stack_size{1024*3}; //!< @brief Size of the stack for task

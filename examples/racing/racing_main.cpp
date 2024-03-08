@@ -852,11 +852,9 @@ static float stage_select_angle = 0;
 
 //static volatile game_mode_t game_mode = game_mode_t::nothing;
 static volatile game_mode_t game_mode = game_mode_t::choose_connection;
-static std::uint32_t msec_best_lap = ~0u;
-static std::uint32_t msec_prev_lap = 0;
-static char best_lap_str[64];
-static char prev_lap_str[64];
-static char lap_str[64];
+//static std::uint32_t msec_best_lap = ~0u;
+//static std::uint32_t msec_prev_lap = 0;
+static char lap_str[2][64]{};;
 
 static std::int32_t lcd_width;
 static std::int32_t lcd_height;
@@ -893,12 +891,10 @@ struct Car
   int add_x{}, add_y{};
   int f16{};
   int prev_texture_id{};
-  uint32_t msec_lapstart{};
-  uint32_t updateCount{};
-    
+  uint32_t msec_lapstart{}, lap_time{}, laps{};
+
   void update(int sa, uint32_t msec, bool self)
   {
-    ++(this->updateCount);
     this->steering_angle = sa;
     this->yaw += this->steering_angle;
     this->yaw = ((this->yaw * 16) + 8) / 17;
@@ -1034,23 +1030,13 @@ struct Car
 
     if (this->prev_texture_id == flag_1 && texture_id == flag_2)
     { // 一周判定
-      int laptime = this->msec_lapstart ? msec - this->msec_lapstart : 0;
-#if 0
-          if (laptime > 1024)
-          {
-              msec_prev_lap = laptime;
-              //        strncpy(prev_lap_str, lap_str, sizeof(prev_lap_str));
-
-              if (msec_best_lap > msec_prev_lap)
-              {
-                  msec_best_lap = msec_prev_lap;
-                  strncpy(best_lap_str, lap_str, sizeof(best_lap_str));
-                  //memcpy(record_replay, current_replay, sizeof(current_replay));
-              }
-          }
-#endif          
-      this->msec_lapstart = msec;
-       //memset(current_replay, 0, sizeof(current_replay));
+      auto laptime = this->msec_lapstart ? msec - this->msec_lapstart : 0;
+      if(laptime > 1024)
+      {
+        ++this->laps;
+        this->lap_time = laptime;
+        this->msec_lapstart = msec;
+      }
     }
     this->prev_texture_id = texture_id;
   }
@@ -1059,12 +1045,10 @@ struct Car
 #define CAR_MAX (2)
 static Car car[CAR_MAX];
 
-static volatile int ghostcar_x; // ゴーストカー座標(ベストラップリプレイ);
-static volatile int ghostcar_y;
-static volatile uint32_t fpsCounter;
-static volatile uint32_t taskCounter{};
-static volatile uint32_t postCounter{};
-uint32_t fps{}, tfps{}, pfps{};
+//static int ghostcar_x; // ゴーストカー座標(ベストラップリプレイ);
+//static int ghostcar_y;
+static uint32_t fpsCounter{}, taskCounter{}, postCounter{}, updateCounter{};
+uint32_t fps{}, tfps{}, pfps{}, ufps{};
 
 static uint32_t texture_palette_16x2x2[2][texture_palette_id_t::pal_max];
 
@@ -1792,6 +1776,7 @@ void comm_callback(const Notify notify, const void* arg)
     case Notify::ConnectionLost:
         addr = *(const MACAddress*)arg;
         M5_LOGE("CONNECTION LOST\n%s", addr.toString().c_str());
+        game_mode = game_mode_t::nothing;
         break;
     case Notify::Shookhands:
         target = *(const MACAddress*)arg;
@@ -1805,7 +1790,7 @@ void gameTask(void*)
 {
   uint32_t input_count = 0;
   uint32_t msec_start = lgfx::millis();
-  uint32_t prev_ghost_framecount = ~0u;
+  //uint32_t prev_ghost_framecount = ~0u;
 
   M5.Speaker.setVolume(255);
   M5.Speaker.setChannelVolume(0, SOUND_VOLUME);
@@ -1814,7 +1799,7 @@ void gameTask(void*)
   {
     ++taskCounter;
     comm.update();
-    delay(1);
+    lgfx::delay(1000/60);
     uint32_t msec = lgfx::millis() - msec_start;
     if ((input_count << 3) > msec)
     {
@@ -1869,8 +1854,6 @@ void gameTask(void*)
         
         stage_data_list[stage_index].makeCourse(&sp_map);
         input_count += 128;
-        //msec_lapstart = 0;
-        //player_f16 = player_f << 16;
         for(auto& c : car) { c.msec_lapstart = 0; c.f16 = c.f << 16; }
         do
         {
@@ -1906,8 +1889,6 @@ void gameTask(void*)
 
           stage_data_list[stage_index].makeCourse(&sp_map);
           input_count += 128;
-          //msec_lapstart = 0;
-          //player_f16 = player_f << 16;
           for(auto& c : car) { c.msec_lapstart = 0; c.f16 = c.f << 16; }
           game_mode = game_mode_t::racing;
           do
@@ -1966,16 +1947,17 @@ void gameTask(void*)
       if(countDown == 0)
       {
         M5_LOGW("StartGame : %u", esp_get_free_heap_size());
+        msec_start = lgfx::millis();
         startTime = 0;
-        if(!inputTRX.post(player_steering_angle)) { M5_LOGW("Failed to post"); }
+        if(!inputTRX.post(player_steering_angle)) { M5_LOGE("Failed to post"); }
       }
       continue;
     }
 
-#if 0
-    if (car[deviceId].msec_lapstart)
+    uint32_t self_sec{};
+    for(uint_fast8_t i=0; i<2; ++i)
     {
-      uint32_t lap_msec = (msec - car[deviceId].msec_lapstart);
+      uint32_t lap_msec = msec - car[i].msec_lapstart;
       if (lap_msec >= 5000)
       {
         lap_msec /= 10;
@@ -1983,64 +1965,54 @@ void gameTask(void*)
         uint32_t lap_min = lap_sec / 60;
         lap_msec -= lap_sec * 100;
         lap_sec -= lap_min * 60;
-        //*
-        snprintf(lap_str, sizeof(lap_str), "%d)%02d:%02d:%02d", deviceId, lap_min, lap_sec, lap_msec);
-        /*/
-        static uint32_t prev_sec = 0;
-        static uint32_t fps = 0;
-        if (prev_sec != lap_sec)
-        {
-          prev_sec = lap_sec;
-          fps = fpsCounter;
-          fpsCounter = 0;
-        }
-        sprintf(lap_str, "%02d:%02d:%02d fps%d", lap_min, lap_sec, lap_msec, fps);
-        //*/
+        if(i == deviceId) { self_sec = lap_sec; }
+        snprintf(lap_str[i], sizeof(lap_str[i]), "%c%d:[%2d]%02d:%02d:%02d",
+                 i == deviceId ? '*' : ' ', i, car[i].laps + 1, lap_min, lap_sec, lap_msec);
       }
     }
-#endif
 
-    static uint32_t prev_sec = 0;
-    static uint32_t fps = 0;
-    uint32_t lap_msec = (msec - car[deviceId].msec_lapstart);
-    lap_msec /= 10;
-    uint32_t lap_sec = lap_msec / 100;
-    if (prev_sec != lap_sec)
+    // Communication
+    M5_LOGE("try lock");
+    if(inputTRX.with_lock([&msec]()
     {
-        prev_sec = lap_sec;
-        fps = fpsCounter;
-        tfps = taskCounter;
-        pfps = postCounter;
-        fpsCounter = taskCounter = postCounter = 0;
-    }
-    //static uint32_t ack{};
-    //M5_LOGI(">>>> Send:ACK:%u %d", ack, player_steering_angle);
-    //    kcom.sendSteer(deviceId, player_steering_angle);
-    if(inputTRX.with_lock([&inputTRX, &msec]()
-    {
+      M5_LOGE("locked");
       if(!inputTRX.available()) { return false; }
-      while(inputTRX.available())
+      do
       {
         auto sa = inputTRX.pop();
-        car[deviceId].update(sa.first, msec, false);
-        car[deviceId ^ 1].update(sa.second, msec, false);
-      }
+        car[deviceId    ].update(sa.first,  msec, deviceId == 0);
+        car[deviceId ^ 1].update(sa.second, msec, deviceId == 1);
+        ++updateCounter;
+        M5_LOGW("update");
+      } while(inputTRX.available());
       return true;
     }))
     {
-      ++postCounter;
-      if(!inputTRX.post(player_steering_angle)) { M5_LOGW("Failed to post"); }    // update car status
+      M5_LOGW("post");
+      if(inputTRX.post(player_steering_angle)) { ++postCounter; }
+      else { M5_LOGE("Failed to post"); } 
     }
-    
+
+  // debug disp
+    static uint32_t prev_sec = 0;
+    if (prev_sec != self_sec)
+    {
+        prev_sec = self_sec;
+        fps = fpsCounter;
+        tfps = taskCounter;
+        pfps = postCounter;
+        ufps = updateCounter;
+        fpsCounter = taskCounter = postCounter = updateCounter = 0;
+    }
+    // for debug
 #if 1
-    snprintf(lap_str, sizeof(lap_str), "%c%d,%d %u %u %u",
-             deviceId == 0 ? '*' : ' ',
-             car[0].x >> 16, car[0].y >> 16,
-             tfps, pfps, fps);
-    snprintf(best_lap_str, sizeof(best_lap_str), "%c%d,%d %u %u %u",
-             deviceId == 1 ? '*' : ' ',
-             car[1].x >> 16, car[1].y >> 16,
-             tfps, pfps, fps);
+    for(uint_fast8_t i=0; i<2; ++i)
+    {
+        snprintf(lap_str[i], sizeof(lap_str[i]), "%c(%d,%d)%2u %2u %2u %2u",
+                 deviceId == i ? '*' : ' ',
+                 car[i].x >> 16, car[i].y >> 16,
+                 tfps, pfps, ufps, fps);
+    }
 #endif
   }//for(;;)
 }
@@ -2117,9 +2089,7 @@ static void setupTexture(const uint8_t* const tex, size_t texlen, LGFX_Sprite* s
 
 void setup(void)
 {
-  //  esp_log_level_set("*", ESP_LOG_VERBOSE);
-    //esp_get_free_internal_heap_size()
-    M5_LOGI("heap: setup %u",esp_get_free_heap_size());
+  M5_LOGI("heap: setup %u",esp_get_free_heap_size());
   // Disable Bluetooth for increase heap (May not make sense in some environments)
   {
     esp_bluedroid_disable();
@@ -2152,7 +2122,7 @@ void setup(void)
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  // ESP-NOW
+  // ESP-NOW / gob_esp_now
   {
     comm.registerNotifyCallback(comm_callback);
     comm.registerTransceiver(&startTRX);
@@ -2160,7 +2130,8 @@ void setup(void)
     auto cfg = comm.config();
     cfg.task_stack_size = 1024*4;
     cfg.update_priority = 0;  // call update myself
-    cfg.receive_priority = 3; // higher than gameTask
+    //cfg.receive_priority = 3;
+    //cfg.receive_core = 0;
     cfg.receive_queue_size = 8;
     comm.begin(APP_ID, cfg);
     M5_LOGI("heap:after comm.begin %u",esp_get_free_heap_size());
@@ -2388,10 +2359,6 @@ void setup(void)
   M5_LOGI("D:%u D+I:%u I:%u", heap_caps_get_free_size(MALLOC_CAP_8BIT), heap_caps_get_free_size(MALLOC_CAP_32BIT),
           heap_caps_get_free_size(MALLOC_CAP_32BIT) - heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-#if 0
-  game_mode = game_mode_t::racing;
-  stage_data_list[stage_index].makeCourse(&sp_map);
-#endif
   display.clear(TFT_ORANGE);
 }
 
@@ -2664,18 +2631,23 @@ void drawRacing(LGFX_Device* gfx)
       sp_steering.pushRotateZoom(sp, lcd_width >> 1, std::max<int>(sp_steering.height() >> 1, sprite_height), player_steering_angle / 256.0f, 1.0f, 1.0f, 0);
       sp_steering.pushRotateZoom(sp, lcd_width >> 1, std::max<int>(sp_steering.height() >> 1, sprite_height), player_steering_angle / 256.0f, -1.0f, 1.0f, 0);
 #endif
+
+#if 0
       sp->setCursor(1, sprite_height - sp->fontHeight() * 2);
       sp->setTextColor(TFT_BLACK);
       sp->println(lap_str);
       sp->setCursor(1, sp->getCursorY());
-      //      sp->println(prev_lap_str);
-      //      sp->setCursor(1, sp->getCursorY());
       sp->println(best_lap_str);
       sp->setCursor(0, sprite_height - sp->fontHeight() * 2 - 1);
       sp->setTextColor(TFT_WHITE);
       sp->println(lap_str);
-      //      sp->println(prev_lap_str);
       sp->println(best_lap_str);
+#else
+      sp->setCursor(1, sprite_height - sp->fontHeight() * 2);
+      sp->setTextColor(TFT_WHITE);
+      for(auto& s : lap_str) { sp->println(s); }
+#endif
+
 #if 0
       sp_map.setPivot(car[deviceId].x >> 16, car[deviceId].y >> 16);
       int px = sp->width() - (sprite_height >> 1);
