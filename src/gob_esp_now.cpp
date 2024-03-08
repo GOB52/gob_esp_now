@@ -756,11 +756,7 @@ void Communicator::callback_onReceive(const uint8_t* peer_addr, const uint8_t* d
     if(ch->signeture != CommunicatorHeader::SIGNETURE
        || ch->app_id != comm._app_id) { LIB_LOGE("Illegal data"); return; }
 
-
-    LIB_LOGE("[RECVCB]");
-    
     MACAddress addr(peer_addr);
-    
     if(comm._config.receive_priority)
     {
         RecvQueueData rqd = { addr, {}, (uint8_t)length };
