@@ -126,28 +126,6 @@ class Transceiver
     template<typename T> inline uint64_t postReliable(const MACAddress& addr, const T& data) { return postReliable(addr.peer_addr(), &data ,sizeof(data)); }
     //! @brief Post to all peer
     template<typename T> inline uint64_t postReliable(                        const T& data) { return postReliable(nullptr,     &data ,sizeof(data)); }
-
-#if 0    
-    /*!
-      @brief Send data
-      @param peer_addr Destination address. Post to all peer if nullptr
-      @param data Payload data if exists
-      @param length Length of the payload data if exists
-      @retval !=0 Sent sequence
-      @retval ==0 Failed to post
-      @warning ESP-NOW does not allow frequent calls to be sent without a send callback being received,
-      @warning as such calls will result in an error.In that case, the library will return failure.
-      @warning <em>Unlike post, if it fails, it is not automatically resubmitted by update,
-      @warning so you have to manage resubmission yourself.</em>
-     */
-    uint64_t sendReliable(const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
-    //! @brief Send to all peer
-    inline uint64_t sendReliable(                   const void* data = nullptr, const uint8_t length = 0) { return sendReliable(nullptr, data, length); }
-    //! @brief Send to destination
-    template<typename T> inline uint64_t sendReliable(const MACAddress& addr, const T& data) { return sendReliable(addr.data(), &data ,sizeof(data)); }
-    //! @brief Send to all peer
-    template<typename T> inline uint64_t sendReliable(                        const T& data) { return sendReliable(nullptr,     &data ,sizeof(data)); }
-#endif
     ///@}
     
     ///@name Data transmission (Unreliable)
@@ -159,10 +137,6 @@ class Transceiver
     template<typename T> inline bool postUnreliable(                        const T& data) { return postUnreliable(nullptr,     &data ,sizeof(data)); }
     bool sendUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length);
     inline bool sendUnreliable(                   const void* data, const uint8_t length)  { return sendUnreliable(nullptr, data, length); }
-#if 0
-    template<typename T> inline bool sendUnreliable(const MACAddress& addr, const T& data) { return sendUnreliable(addr.data(), &data ,sizeof(data)); }
-    template<typename T> inline bool sendUnreliable(                        const T& data) { return sendUnreliable(nullptr,     &data ,sizeof(data)); }
-#endif
     ///@}    
    
     /*!

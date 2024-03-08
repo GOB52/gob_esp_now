@@ -7,10 +7,12 @@
 #include <gob_transceiver.hpp>
 #include <tuple>
 #include <array>
+#include <cassert>
 #include <internal/gob_esp_now_log.hpp>
 
 template <typename T, size_t Capacity> class RingBuffer
 {
+    static_assert(Capacity > 0, "Capacity must be > 0");
     static_assert(Capacity <= 255, "Capacity must be <= 255");
   public:
     RingBuffer() {}
@@ -23,7 +25,7 @@ template <typename T, size_t Capacity> class RingBuffer
             _tail %= Capacity;
             ++_size;
         }
-        else {  LIB_LOGE("Overflow"); }
+        else {  LIB_LOGE("Overflow"); abort(); }
     }
     void pop()
     {
@@ -32,11 +34,11 @@ template <typename T, size_t Capacity> class RingBuffer
             _head = (_head + 1) % Capacity;
             --_size;
         }
-        else { LIB_LOGE("Empty"); }
+        else { LIB_LOGE("Empty"); abort(); }
     }
-    inline const T& front() { return _buf[_head]; }
-    inline bool empty() const { return !_size; }
-    inline bool full() const { return _size == Capacity; }
+    inline const T& front() { assert(_size > 0 && "Empty"); return _buf[_head]; }
+    inline bool empty() const { return _size == 0; }
+    inline bool full() const { return _size >= Capacity; }
     inline uint8_t size() const { return _size; }
     
   private:
@@ -56,7 +58,6 @@ class InputTRX : public goblib::esp_now::Transceiver
     inline uint64_t acked() const { return _ackedSeq; }
     inline uint64_t available() const { return _ackedSeq > _poped ? _ackedSeq - _poped : 0; }
 
-    // Call if available
     std::pair<int, int> pop()
     {
         int s = _sent.front();
@@ -69,7 +70,7 @@ class InputTRX : public goblib::esp_now::Transceiver
     
     bool post(const int val)
     {
-        return with_lock([this, &val]()
+        return with_lock([this,&val]()
         {
             if(this->postReliable(val) != 0)
             {
@@ -89,6 +90,6 @@ class InputTRX : public goblib::esp_now::Transceiver
 
   private:
     uint64_t _poped{}, _ackedSeq{};
-    RingBuffer<int, 8>  _sent, _received;
+    RingBuffer<int, 128>  _sent, _received;
 };
 #endif

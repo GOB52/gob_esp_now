@@ -104,17 +104,6 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
     return rseq;
 }
 
-#if 0
-uint64_t Transceiver::sendReliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
-{
-    if(!peer_addr || (peer_addr && !esp_now_is_peer_exist(peer_addr))) { return 0; }
-
-    uint8_t buf[sizeof(TransceiverHeader) + length]{};
-    auto seq = make_data(buf, RUDP::Flag::ACK, peer_addr, data, length);
-    return Communicator::instance().sendWithLock(peer_addr, buf, sizeof(buf)) ? seq : 0;
-}
-#endif
-
 bool Transceiver::postUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
 {
     if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { LIB_LOGW("Not exists");  return false; }
@@ -123,16 +112,6 @@ bool Transceiver::postUnreliable(const uint8_t* peer_addr, const void* data, con
     return make_data(seq, buf, RUDP::Flag::NONE, peer_addr, data, length) && 
             Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf));
 }
-
-#if 0
-bool Transceiver::sendUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length)
-{
-    if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { return false; }
-    uint8_t buf[sizeof(TransceiverHeader) + length]{};
-    make_data(buf, RUDP::Flag::NONE, peer_addr, data, length);
-    return Communicator::instance().sendWithLock(peer_addr, buf, sizeof(buf));
-}
-#endif
 
 void Transceiver::build_peer_map()
 {
@@ -219,17 +198,19 @@ void Transceiver::_update(const unsigned long ms, const uint8_t cumulativeAckTim
         if(!pi.first || !esp_now_is_peer_exist(pi.first.data()) || !pi.second.needReturnACK) { continue; }
 
         // Send ACK if nothing is sent for a certain period of time after receiving ACK with payload
+        // Disable if CAT is zero.
         auto rtm = pi.second.recvTime;
-        if(rtm && ms > rtm + cumulativeAckTimeout)
+        if(cumulativeAckTimeout && rtm && ms > rtm + cumulativeAckTimeout)
         {
-            LIB_LOGE(">>ForceACK:CAT");
+            LIB_LOGI(">>ForceACK[%u]:CAT %lu/%lu", _tid, rtm, ms);
             addrs.insert(pi.first);
             continue;
         }
         // Post ACK if the number of unrespond ACKs exceeds a certain number
-        if(pi.second.recvSeq > pi.second.sentAck + maxCumAck)
+        // Disable if maxCumAck is zero.
+        if(maxCumAck && pi.second.recvSeq > pi.second.sentAck + maxCumAck)
         {
-            LIB_LOGE(">>FoeceACK:MCA");
+            LIB_LOGI(">>FoeceACK[%u]:MCA", _tid);
             addrs.insert(pi.first);
         }
     }

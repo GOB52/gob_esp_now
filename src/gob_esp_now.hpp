@@ -87,6 +87,10 @@ class Communicator
     inline bool isNoRole() const   { return _role == Role::None; } //!< @brief No role?
     inline bool isAnyRole() const  { return !isNoRole(); } //!< @breif is any role?
     ///@}
+
+    
+    /*! @brief Change config */
+    void config(const config_t& cfg) { with_lock([this, &cfg]() { _config = cfg; }); }
     
     /*!
       @brief Begin communication
@@ -145,21 +149,6 @@ class Communicator
         lock_guard _(_sem);
         return post(peer_addr, data, length);
     }
-#if 0
-    /*!
-      @brief Send transceiver data
-      @param peer_addr MAC address (send all unicast peer if nullptr)
-      @param data data pointer
-      @param length Length of data
-     */
-    bool send(const uint8_t* peer_addr, const void* data, const uint8_t length);
-    //! @brief Send data with lock
-    bool sendWithLock(const uint8_t* peer_addr, const void* data, const uint8_t length)
-    {
-        lock_guard _(_sem);
-        return send(peer_addr, data, length);
-    }
-#endif
     /*!
       @brief Call any function with lock
       @param Func Any functor
@@ -242,7 +231,6 @@ class Communicator
     ///@}
 
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
-    //    void append_to_sent(const uint8_t* peer_addr, std::vector<uint8_t>& packet);    
     bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
     void reset_sent_state(const MACAddress& addr);
 

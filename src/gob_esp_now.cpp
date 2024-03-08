@@ -238,7 +238,7 @@ bool Communicator::begin(const uint8_t app_id, const config_t& cfg)
             MACAddress addr(info.peer_addr);
             auto& md = _queue[addr];
             md.reserve(ESP_NOW_MAX_DATA_LEN);
-            _state[addr].recvTime = rt; // Provisional settings
+            //_state[addr].recvTime = rt; // Provisional settings
         }
         while(esp_now_fetch_peer(false, &info) == ESP_OK);
     }
@@ -278,7 +278,7 @@ void Communicator::end()
     esp_now_unregister_recv_cb();
 
     if(_update_task)  { vTaskDelete(_update_task); _update_task = nullptr; }
-    if(_receive_task) {vTaskDelete(_receive_task);  _receive_task = nullptr; }
+    if(_receive_task) { vTaskDelete(_receive_task);  _receive_task = nullptr; }
     vQueueDelete(_receive_queue);
     _receive_queue = nullptr;
 }
@@ -386,6 +386,7 @@ void Communicator::update()
         }
         // If I have not received for double the time of the NUL timeout
         if(isPrimary()
+           && ss.second.recvTime
            && ss.second.sentTime < ss.second.recvTime
            && ms > ss.second.recvTime + _config.nullSegmentTimeout * 2)
         {
@@ -432,34 +433,6 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
     //LIB_LOGD("CH:%u:%u", ch->count, ch->size);
     return true;
 }
-
-#if 0
-// Send directly
-bool Communicator::send(const uint8_t* peer_addr, const void* data, const uint8_t length)
-{
-    lock_guard _(_sem);
-
-    if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { LIB_LOGE("peer_addr not exists"); return false; }
-
-    if(!_began) { LIB_LOGE("Not ready to send"); return false; }
-    if(sizeof(CommunicatorHeader) + length > ESP_NOW_MAX_DATA_LEN) { LIB_LOGE("Packet overflow"); return false; }
-
-    std::vector<uint8_t> v;
-    v.reserve(ESP_NOW_MAX_DATA_LEN);
-    
-    CommunicatorHeader ch{};
-    ch.app_id = _app_id;
-    ch.count = 1;
-    ch.size = sizeof(ch) + length;
-    v.resize(ch.size);
-    auto dst = v.data();
-    std::memcpy(dst, &ch, sizeof(ch));
-    std::memcpy(dst + sizeof(ch), data, length);
-
-    reset_sent_state(MACAddress(peer_addr));
-    return send_esp_now(peer_addr, v);
-}
-#endif
 
 // Call with communicator locked.
 bool Communicator::send_esp_now(const uint8_t* peer_addr, std::vector<uint8_t>& packet)
@@ -738,7 +711,7 @@ void Communicator::onSent(const MACAddress& addr, const esp_now_send_status_t st
         auto sz = _lastSentQueue.size();
         auto b = !_queue[addr].empty();
         _queue[addr] = append_queue(_lastSentQueue, _queue[addr]);
-        if(b) { LIB_LOGD("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
+        if(b) { LIB_LOGI("%d append %zu => %zu", succeed, sz, _queue[addr].size()); }
         
         if(_state.count(addr))
         {

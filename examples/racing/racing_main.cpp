@@ -164,11 +164,6 @@ bool funcInputEnter(void)
     input_pressed = false;
     return true;
   }
-
-  if (M5.BtnPWR.wasClicked())
-  {
-    return true;
-  }
   return false;
 }
 
@@ -1805,6 +1800,10 @@ void gameTask(void*)
       lgfx::delay((input_count << 3) - msec);
       msec = lgfx::millis() - msec_start;
     }
+    else
+    {
+        //lgfx::delay(1);
+    }
     ++input_count;
 
     M5.update();
@@ -1859,6 +1858,13 @@ void gameTask(void*)
         //   player_steering_angle = funcInputLeftRight();
         //   lgfx::delay(8);
         // } while ((input_count << 3) > (lgfx::millis() - msec_start));
+
+        // Disable force ACK (By posting to each other, they also serve as ACK)
+        auto cfg = comm.config();
+        cfg.cumulativeAckTimeout = 0;
+        cfg.maxCumAck = 0;
+        comm.config(cfg);
+
         game_mode = game_mode_t::racing;
       }
       continue;
@@ -1889,6 +1895,13 @@ void gameTask(void*)
           stage_data_list[stage_index].makeCourse(&sp_map);
           //input_count += 128;
           for(auto& c : car) { c.msec_lapstart = 0; c.f16 = c.f << 16; }
+
+          // Disable force ACK (By posting to each other, they also serve as ACK)
+          auto cfg = comm.config();
+          cfg.cumulativeAckTimeout = 0;
+          cfg.maxCumAck = 0;
+          comm.config(cfg);
+
           game_mode = game_mode_t::racing;
           // do
           // {
@@ -1965,8 +1978,10 @@ void gameTask(void*)
         uint32_t lap_min = lap_sec / 60;
         lap_msec -= lap_sec * 100;
         lap_sec -= lap_min * 60;
-        snprintf(lap_str[i], sizeof(lap_str[i]), "%c%d:[%2d]%02d:%02d:%02d",
-                 i == deviceId ? '*' : ' ', i, car[i].laps + 1, lap_min, lap_sec, lap_msec);
+#if 1        
+        snprintf(lap_str[i], sizeof(lap_str[i]), "%cL:%2d %02d:%02d:%02d",
+                 i == deviceId ? '*' : ' ',car[i].laps + 1, lap_min, lap_sec, lap_msec);
+#endif        
       }
     }
 
@@ -1974,9 +1989,10 @@ void gameTask(void*)
     if(inputTRX.with_lock([&msec]()
     {
       if(!inputTRX.available()) { return false; }
+      // Update the car status  with the received and reached data.
       do
       {
-        auto sa = inputTRX.pop();
+        auto sa = inputTRX.pop(); // Gets the mine and target pair.
         car[deviceId    ].update(sa.first,  msec, deviceId == 0);
         car[deviceId ^ 1].update(sa.second, msec, deviceId == 1);
         ++updateCounter;
@@ -2117,21 +2133,6 @@ void setup(void)
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  // ESP-NOW / gob_esp_now
-  {
-    comm.registerNotifyCallback(comm_callback);
-    comm.registerTransceiver(&startTRX);
-    comm.registerTransceiver(&inputTRX);
-    auto cfg = comm.config();
-    cfg.task_stack_size = 1024*4;
-    cfg.update_priority = 0;  // call update myself
-    cfg.receive_priority = 3;
-    //cfg.receive_core = 0;
-    cfg.receive_queue_size = 8;
-    comm.begin(APP_ID, cfg);
-    M5_LOGI("heap:after comm.begin %u",esp_get_free_heap_size());
-  }
-  
   // 最初にマップ用の256x256のメモリを確保しておく;
   sp_map.setColorDepth(8);
   sp_map.createSprite(256, 256);
@@ -2188,7 +2189,7 @@ void setup(void)
     );
   }
 
-#if 0  
+#if 0
   sp_steering.setColorDepth(2);
   sp_steering.createSprite((lcd_height >> 1) + 1, lcd_height + 1);
   int half_height = sp_steering.height() >> 1;
@@ -2341,6 +2342,27 @@ void setup(void)
   cd_sprite.createSprite(6 * 3,8);
   cd_sprite.setFont(&fonts::Font0);
 
+  // ESP-NOW / gob_esp_now
+  {
+    comm.registerNotifyCallback(comm_callback);
+    comm.registerTransceiver(&startTRX);
+    comm.registerTransceiver(&inputTRX);
+    auto cfg = comm.config();
+    cfg.task_stack_size = 1024*4;
+    cfg.update_priority = 0;  // call update myself
+    cfg.receive_priority = 3;
+    cfg.receive_core = 0;
+    //cfg.receive_queue_size = 8;
+    /*
+    // Disable force ACK (By posting to each other, they also serve as ACK)
+    cfg.cumulativeAckTimeout = 0;
+    cfg.maxCumAck = 0;
+    */
+    comm.begin(APP_ID, cfg);
+    //    esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
+    M5_LOGI("heap:after comm.begin %u",esp_get_free_heap_size());
+  }
+  
   // task
   auto ret = xTaskCreatePinnedToCore(gameTask, "gameTask", 1024 * 4, nullptr, 2 /*priority*/, nullptr, PRO_CPU_NUM /*core*/);
   M5_LOGI("create task:%d %u", ret, esp_get_free_heap_size());
@@ -2626,6 +2648,16 @@ void drawRacing(LGFX_Device* gfx)
       sp_steering.pushRotateZoom(sp, lcd_width >> 1, std::max<int>(sp_steering.height() >> 1, sprite_height), player_steering_angle / 256.0f, -1.0f, 1.0f, 0);
 #endif
 
+      {
+        auto stop = sprite_height - sp->fontHeight() * (2 - deviceId);
+        constexpr int16_t sleft = 180;
+        constexpr int16_t swid = 60;
+        int16_t shgt = sp->fontHeight();
+        sp->drawRect(sleft, stop, swid, shgt, TFT_WHITE);
+        sp->drawFastVLine(sleft + swid / 2, stop, shgt, TFT_RED);
+        sp->drawFastVLine(sleft + swid * ((player_steering_angle + 32768) / 65536.f), stop, shgt, TFT_WHITE);
+      }
+      
       sp->setCursor(1, sprite_height - sp->fontHeight() * 2);
       sp->setTextColor(TFT_WHITE);
       for(auto& s : lap_str) { sp->println(s); }
@@ -2652,6 +2684,8 @@ void loop(void)
   switch (game_mode)
   {
   default:
+    display.clear(0);
+    break;
   case game_mode_t::choose_connection:
     drawChooseConnection(&display);
     break;
