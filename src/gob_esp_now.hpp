@@ -87,7 +87,6 @@ class Communicator
     inline bool isNoRole() const   { return _role == Role::None; } //!< @brief No role?
     inline bool isAnyRole() const  { return !isNoRole(); } //!< @breif is any role?
     ///@}
-
     
     /*! @brief Change config */
     void config(const config_t& cfg) { with_lock([this, &cfg]() { _config = cfg; }); }
@@ -183,6 +182,7 @@ class Communicator
     void setMaxHandshakePeer(const uint8_t num); //!< @brief Set the maximum number of peers that can be handshaked
     bool broadcastHandshake(); //!< @breif Broadcast transmission of connection negotiations
     bool postSYN(const MACAddress& addr); //!< @brief Post SYN request
+    uint8_t numOfHandshakedPeer() const; //!< @brief Gets the number of handshaked peer
     ///@}
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)

@@ -22,8 +22,8 @@
 
 using namespace goblib::esp_now;
 
-static time_t startTime{};
-static int countDown{};
+static time_t startTime{}, countDown{};
+static unsigned long waitTimeout{};
 static uint8_t deviceId{0x00};
 constexpr char posixTZ[] = "JST-9"; // To be the same on each device.
 static LGFX_Sprite cd_sprite;
@@ -49,6 +49,7 @@ void configTime()
 {
     // WiFi connect
     WiFi.begin(); // Connect to credential in Hardware. (ESP32 saves the last WiFi connection)
+    //WiFi.begin("SSID", "PASS");
     int tcount = 32;
     while(tcount-- > 0 && WiFi.status() != WL_CONNECTED)
     {
@@ -821,7 +822,8 @@ enum game_mode_t
 {
   nothing = 0,
   choose_connection,
-  waiting,
+  wait_host,
+  wait_slave,
   stage_select,
   racing,
 };
@@ -866,13 +868,6 @@ static LGFX_Sprite sp_map; // マップデータ;
 //static LGFX_Sprite sp_needle; // メーター針画像;
 
 static volatile int player_steering_angle = 0;
-#if 0
-static volatile int player_x; // 自機座標;
-static volatile int player_y;
-static volatile float player_tacho = 0;
-static volatile float player_speed = 0;
-static volatile uint32_t player_f;   // 自機角度;
-#endif
 
 // Car class
 struct Car
@@ -888,7 +883,7 @@ struct Car
   int prev_texture_id{};
   uint32_t msec_lapstart{}, lap_time{}, laps{};
 
-  void update(int sa, uint32_t msec, bool self)
+    void update(int sa, uint32_t msec, bool self /* play sound if true */)
   {
     this->steering_angle = sa;
     this->yaw += this->steering_angle;
@@ -1039,9 +1034,6 @@ struct Car
 
 #define CAR_MAX (2)
 static Car car[CAR_MAX];
-
-//static int ghostcar_x; // ゴーストカー座標(ベストラップリプレイ);
-//static int ghostcar_y;
 static uint32_t fpsCounter{}, taskCounter{}, postCounter{}, updateCounter{};
 uint32_t fps{}, tfps{}, pfps{}, ufps{};
 
@@ -1800,10 +1792,6 @@ void gameTask(void*)
       lgfx::delay((input_count << 3) - msec);
       msec = lgfx::millis() - msec_start;
     }
-    else
-    {
-        //lgfx::delay(1);
-    }
     ++input_count;
 
     M5.update();
@@ -1818,7 +1806,7 @@ void gameTask(void*)
       // Handshaked to other device?
       if(comm.isSecondary())
       {
-        game_mode = game_mode_t::waiting;
+        game_mode = game_mode_t::wait_host;
         M5_LOGI("Handshake : Im secondary");
         continue;
       }
@@ -1828,8 +1816,9 @@ void gameTask(void*)
         input_pressed = 0;
         if(comm.broadcastHandshake())
         {
-            M5_LOGI("broadcast handshake");
-            game_mode = game_mode_t::stage_select;
+          M5_LOGI("broadcast handshake");
+          game_mode = game_mode_t::wait_slave;
+          waitTimeout = msec + 1000 * 5; // 5 Sec
         }
         else
         {
@@ -1839,13 +1828,27 @@ void gameTask(void*)
       continue;
     }
 
+    // waiting (Primary)
+    if( game_mode == game_mode_t::wait_slave)
+    {
+      if(comm.numOfHandshakedPeer() == 1)
+      {
+        game_mode = game_mode_t::stage_select;
+      }
+      else if(msec >= waitTimeout)
+      {
+        game_mode = game_mode_t::choose_connection;
+      }
+      continue;
+    }
+
     // waiting (Secondary)
-    if( game_mode == game_mode_t::waiting)
+    if( game_mode == game_mode_t::wait_host)
     {
       if(startTRX.time())
       {
         startTime = startTRX.time();
-        countDown = (int)(startTime - std::time(nullptr));
+        countDown = startTime + 1;
         stage_index = startTRX.stage();
         M5_LOGI("receive synctime and stage: %ld / %d", startTime, stage_index);
         deviceId = 1;
@@ -1886,11 +1889,11 @@ void gameTask(void*)
         if (enter)
         {
           startTime = std::time(nullptr) + 5; //start after 5 sec.
+          countDown = startTime + 1;
+
           M5_LOGI("post stage:%u time:%lu", stage_index, startTime);
           startTRX.post(stage_index, startTime);
-
           deviceId = 0;
-          countDown = (int)(startTime - std::time(nullptr));
 
           stage_data_list[stage_index].makeCourse(&sp_map);
           //input_count += 128;
@@ -1955,8 +1958,7 @@ void gameTask(void*)
     // Waiting for start synchronization
     if(startTime)
     {
-      countDown = (int)(startTime - std::time(nullptr));
-      if(countDown == 0)
+      if(startTime - std::time(nullptr) == 0)
       {
         M5_LOGW("StartGame : %u", esp_get_free_heap_size());
         for(auto& c : car) { c.msec_lapstart = msec; }
@@ -1965,7 +1967,11 @@ void gameTask(void*)
       }
       continue;
     }
-
+    if(countDown)
+    {
+      if(countDown - std::time(nullptr) == 0) { countDown = 0; }
+    }
+    
     uint32_t self_sec{};
     for(uint_fast8_t i=0; i<2; ++i)
     {
@@ -2359,6 +2365,7 @@ void setup(void)
     cfg.maxCumAck = 0;
     */
     comm.begin(APP_ID, cfg);
+    comm.setMaxHandshakePeer(1); // P2P only
     //    esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_54M);
     M5_LOGI("heap:after comm.begin %u",esp_get_free_heap_size());
   }
@@ -2378,46 +2385,48 @@ void setup(void)
   display.clear(TFT_ORANGE);
 }
 
-bool drawCountdown(LGFX_Sprite* sp, int sec, int yoff)
+void drawCountdown(LGFX_Sprite* sp, int yoff)
 {
-  if(sec < 0 || sec > 3) { return false; }
+  static unsigned long ms{};
+  static time_t prev{99};
+  auto sec = (countDown - std::time(nullptr)) - 1;
+  if(sec > 3 || sec ==0) { return; }
   
-  static long ms{};
-  static time_t prev{11111};
-  String str(sec);
-  if(sec == 0) { str = "GO!"; }
-
+  auto now = lgfx::millis();
   if(prev != sec)
   {
     prev = sec;
-    ms = lgfx::millis();
+    ms = now;
     cd_sprite.clear(0);
-    cd_sprite.drawString(str, (sec == 0) ? 0 : 6, 0);
+    cd_sprite.drawString((sec == 0) ? "GO!" : String(sec).c_str(), (sec == 0) ? 0 : 6, 0);
   }
-
-  auto now = lgfx::millis();
-  float scale = (1000.0f - (now - ms)) * 0.048f;
+  float scale = (1000.0f - (now - ms)) * 0.05f;
   cd_sprite.pushRotateZoom(sp,
                            display.width()/2 + scale/2,
                            display.height()/2 - yoff + scale/2,
                            0, scale, scale, 0);
-  return scale < 1.0f && sec == 0;
 }
 
 void drawChooseConnection(LGFX_Device* gfx)
 {
   gfx->setTextSize(2,2);
-  gfx->drawString("Push enter to HOST", 0, gfx->height()/2);
+  gfx->drawString("Push enter to HOST ", 0, gfx->height()/2);
   gfx->setTextSize(1,1);
 }
 
 
-void drawWaiting(LGFX_Device* gfx)
+void drawWaitHost(LGFX_Device* gfx)
 {
   gfx->setTextSize(2,2);
   gfx->setCursor(16, gfx->height()/2);
-  gfx->fillRect(16, gfx->height()/2, gfx->width() - 16, 8*2);
-  gfx->printf("[%u] Waiing HOST", deviceId);
+  gfx->printf(    "[%u] Waiing HOST...", deviceId);
+  gfx->setTextSize(1,1);
+}
+
+void drawWaitSlave(LGFX_Device* gfx)
+{
+  gfx->setTextSize(2,2);
+  gfx->drawString("Wait slave...      ", 0, gfx->height()/2);
   gfx->setTextSize(1,1);
 }
 
@@ -2672,7 +2681,7 @@ void drawRacing(LGFX_Device* gfx)
       sp->clearClipRect();
     }
 
-    //    if(drawCountdown(sp, countDown, y)) { countDown = -1; }
+    if(countDown) { drawCountdown(sp, y); }
 
     sprites[flip].pushSprite(gfx, 0, y);
   }
@@ -2684,13 +2693,15 @@ void loop(void)
   switch (game_mode)
   {
   default:
-    display.clear(0);
     break;
   case game_mode_t::choose_connection:
     drawChooseConnection(&display);
     break;
-  case game_mode_t::waiting:
-    drawWaiting(&display);
+  case game_mode_t::wait_slave:
+    drawWaitSlave(&display);
+    break;
+  case game_mode_t::wait_host:
+    drawWaitHost(&display);
     break;
   case game_mode_t::stage_select:
     drawStageSelect(&display);

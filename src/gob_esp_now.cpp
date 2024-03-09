@@ -846,6 +846,11 @@ bool Communicator::postSYN(const MACAddress& addr)
     return _sysTRX->postSYN(addr, _config);
 }
 
+uint8_t Communicator::numOfHandshakedPeer() const
+{
+    return _sysTRX->numOfHandshakedPeer();
+}
+
 void Communicator::update_task(void* arg)
 {
     Communicator* comm = (Communicator*)arg;

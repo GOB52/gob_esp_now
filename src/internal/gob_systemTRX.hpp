@@ -28,7 +28,8 @@ class SystemTRX : public Transceiver
      void setMaxHandshakePeer(const uint8_t num);
     bool broadcastHandshake();
     bool postSYN(const MACAddress& addr, const config_t& cfg);
-
+    uint8_t numOfHandshakedPeer() const { return _handshaked; }
+    
 #if !defined(NDEBUG)
     virtual String debugInfo() const override;
 #endif
@@ -41,7 +42,7 @@ class SystemTRX : public Transceiver
     bool _enableHandshake{true};
     uint8_t _maxPeer{}; // 0 means as much as memory and ESP-NOW will allow
     uint8_t _handshaked{};
-    
+
     // For handshake
     struct SynInfo
     {
