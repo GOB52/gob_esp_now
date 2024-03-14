@@ -55,9 +55,8 @@ class InputTRX : public goblib::esp_now::Transceiver
 
     explicit InputTRX(const uint8_t tid) : goblib::esp_now::Transceiver(tid) {}
 
-    inline uint64_t acked() const { return _ackedSeq; }
-    inline uint64_t available() const { return _ackedSeq > _poped ? _ackedSeq - _poped : 0; }
-
+    bool available() const { return delivered(_poped + 1); }
+    
     std::pair<int, int> pop()
     {
         int s = _sent.front();
@@ -77,6 +76,7 @@ class InputTRX : public goblib::esp_now::Transceiver
                 this->_sent.push(val);
                 return true;
             }
+            LIB_LOGE("Failed to post");
             return false;
         });
     }
@@ -84,12 +84,17 @@ class InputTRX : public goblib::esp_now::Transceiver
   protected:
     virtual void onReceive(const MACAddress& addr, const void* data, const uint8_t length)
     {
+        // StarGame 後の通信で [Seq, acked]
+        // A -- [1,0] -> B
+        // A <- [1,0] -- B
+        // となった時に双方 Acked 0 になるので 初回は明示的に ack 返す
+        // Config で 強制 Ack を無効にしているための措置
+        if(peerInfo(addr)->recvAck == 0) { post_ack(addr); } 
         _received.push(*(const int*)data);
-        _ackedSeq = peerInfo(addr)->recvAck;
     }
 
   private:
-    uint64_t _poped{}, _ackedSeq{};
-    RingBuffer<int, 128>  _sent, _received;
+    uint64_t _poped{};
+    RingBuffer<int, 16>  _sent, _received;
 };
 #endif

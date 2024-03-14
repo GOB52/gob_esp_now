@@ -2,8 +2,7 @@
   Sample of M5Stack racing game eample modified to allow p2p matches
  */
 
-#define ANALOG_CENTER 1864
-//#define SOUND_VOLUME 64     // speaker volume setting (default:64)
+//#define SOUND_VOLUME 64     // speaker volume setting
 #define SOUND_VOLUME 0
 
 #include <M5Unified.h>
@@ -22,27 +21,31 @@
 
 using namespace goblib::esp_now;
 
-static time_t startTime{}, countDown{};
-static unsigned long waitTimeout{};
-static uint8_t deviceId{0x00};
+namespace
+{
+time_t startTime{}, countDown{};
+unsigned long waitTimeout{};
+uint8_t deviceId{0x00};
 constexpr char posixTZ[] = "JST-9"; // To be the same on each device.
-static LGFX_Sprite cd_sprite;
+LGFX_Sprite cd_sprite;
 
 PROGMEM const char ntp0[] = "ntp.nict.jp";
 PROGMEM const char ntp1[] = "ntp.jst.mfeed.ad.jp";
 PROGMEM const char ntp2[] = "time.cloudflare.com";
 const char* ntp[] = { ntp0, ntp1, ntp2 };
 
-static auto &display = M5.Display;
-static bool input_pressed = false;
+auto &display = M5.Display;
+bool input_pressed = false;
 
-static auto& comm = goblib::esp_now::Communicator::instance();
-static MACAddress target;
-static constexpr uint8_t APP_ID = 3;
-static constexpr uint8_t START_TRX_ID = 1;
-static constexpr uint8_t INPUT_TRX_ID = 2;
-static StartTRX startTRX(START_TRX_ID);
-static InputTRX inputTRX(INPUT_TRX_ID);
+auto& comm = goblib::esp_now::Communicator::instance();
+MACAddress target;
+constexpr uint8_t APP_ID = 3;
+constexpr uint8_t START_TRX_ID = 1;
+constexpr uint8_t INPUT_TRX_ID = 2;
+StartTRX startTRX(START_TRX_ID);
+InputTRX inputTRX(INPUT_TRX_ID);
+//
+}
 
 // Time synchronization
 void configTime()
@@ -1035,6 +1038,7 @@ struct Car
 #define CAR_MAX (2)
 static Car car[CAR_MAX];
 static uint32_t fpsCounter{}, taskCounter{}, postCounter{}, updateCounter{};
+uint32_t updateCounterAll{}, postCounterAll{};
 uint32_t fps{}, tfps{}, pfps{}, ufps{};
 
 static uint32_t texture_palette_16x2x2[2][texture_palette_id_t::pal_max];
@@ -1764,7 +1768,7 @@ void comm_callback(const Notify notify, const void* arg)
         M5_LOGE("CONNECTION LOST\n%s", addr.toString().c_str());
         game_mode = game_mode_t::nothing;
         break;
-    case Notify::Shookhands:
+    case Notify::Shakehand:
         target = *(const MACAddress*)arg;
         M5_LOGI("Complete handshake with %s", target.toString().c_str());
         comm.unregisterPeer(BROADCAST);
@@ -1911,6 +1915,7 @@ void gameTask(void*)
           //   player_steering_angle = funcInputLeftRight();
           //   lgfx::delay(8);
           // } while ((input_count << 3) > (lgfx::millis() - msec_start));
+          player_steering_angle = 0; // to center
           continue;
         }
 
@@ -1953,6 +1958,34 @@ void gameTask(void*)
       }
       continue;
     }
+
+#if 0
+OK 時は 片方は StartGame 前に Receive
+[OK]
+Core2
+5:14:51.018 > [ 11393][W][racing_main.cpp:1966] gameTask(): StartGame : 15536
+15:14:51.030 > [ 11402][W][gob_transceiver.cpp:238] on_receive(): [GEN] "[RECV]:2 0x40 S:1 A:1 P:4 -> S:0 => 1 A:0 => 1"
+       
+Core        
+[  8239][I][racing_main.cpp:1856] gameTask(): receive synctime and stage: 1710396891 / 0
+[ 12987][W][gob_transceiver.cpp:238] on_receive(): [GEN] "[RECV]:2 0x40 S:1 A:0 P:4 -> S:0 => 1 A:0 => 0"
+[ 12991][W][racing_main.cpp:1966] gameTask(): StartGame : 16020
+
+
+
+[NG]
+Core2
+15:15:09.017 > [ 14236][W][racing_main.cpp:1966] gameTask(): StartGame : 15840
+15:15:09.029 > [ 14245][W][gob_transceiver.cpp:238] on_receive(): [GEN] "[RECV]:2 0x40 S:1 A:0 P:4 -> S:0 => 1 A:0 => 0"
+Core
+[ 15230][W][gob_transceiver.cpp:238] on_receive(): [GEN] "[RECV]:2 0x40 S:1 A:0 P:4 -> S:0 => 1 A:0 => 0"        
+
+
+両方ACK 0
+
+        
+#endif
+
     
     // --- game_mode_t::racing
     // Waiting for start synchronization
@@ -1964,6 +1997,7 @@ void gameTask(void*)
         for(auto& c : car) { c.msec_lapstart = msec; }
         startTime = 0;
         if(!inputTRX.post(player_steering_angle)) { M5_LOGE("Failed to post"); }
+        ++postCounterAll;
       }
       continue;
     }
@@ -1984,7 +2018,7 @@ void gameTask(void*)
         uint32_t lap_min = lap_sec / 60;
         lap_msec -= lap_sec * 100;
         lap_sec -= lap_min * 60;
-#if 1        
+#if 1
         snprintf(lap_str[i], sizeof(lap_str[i]), "%cL:%2d %02d:%02d:%02d",
                  i == deviceId ? '*' : ' ',car[i].laps + 1, lap_min, lap_sec, lap_msec);
 #endif        
@@ -2001,12 +2035,12 @@ void gameTask(void*)
         auto sa = inputTRX.pop(); // Gets the mine and target pair.
         car[deviceId    ].update(sa.first,  msec, deviceId == 0);
         car[deviceId ^ 1].update(sa.second, msec, deviceId == 1);
-        ++updateCounter;
+        ++updateCounter; ++updateCounterAll;
       } while(inputTRX.available());
       return true;
     }))
     {
-      if(inputTRX.post(player_steering_angle)) { ++postCounter; }
+      if(inputTRX.post(player_steering_angle)) { ++postCounter; ++postCounterAll;}
       else { M5_LOGE("Failed to post"); } 
     }
 
@@ -2389,8 +2423,8 @@ void drawCountdown(LGFX_Sprite* sp, int yoff)
 {
   static unsigned long ms{};
   static time_t prev{99};
-  auto sec = (countDown - std::time(nullptr)) - 1;
-  if(sec > 3 || sec ==0) { return; }
+  auto sec = (countDown - std::time(nullptr));
+  if(sec > 4 || sec == 0) { return; }
   
   auto now = lgfx::millis();
   if(prev != sec)
@@ -2398,7 +2432,7 @@ void drawCountdown(LGFX_Sprite* sp, int yoff)
     prev = sec;
     ms = now;
     cd_sprite.clear(0);
-    cd_sprite.drawString((sec == 0) ? "GO!" : String(sec).c_str(), (sec == 0) ? 0 : 6, 0);
+    cd_sprite.drawString((sec == 1) ? "GO!" : String(sec - 1).c_str(), (sec == 1) ? 0 : 6, 0);
   }
   float scale = (1000.0f - (now - ms)) * 0.05f;
   cd_sprite.pushRotateZoom(sp,
@@ -2657,20 +2691,25 @@ void drawRacing(LGFX_Device* gfx)
       sp_steering.pushRotateZoom(sp, lcd_width >> 1, std::max<int>(sp_steering.height() >> 1, sprite_height), player_steering_angle / 256.0f, -1.0f, 1.0f, 0);
 #endif
 
+      // Only steering wheel is shown with lines due to lack of memory
       {
         auto stop = sprite_height - sp->fontHeight() * (2 - deviceId);
         constexpr int16_t sleft = 180;
-        constexpr int16_t swid = 60;
+        constexpr int16_t swid = 61;
         int16_t shgt = sp->fontHeight();
+        float sr = player_steering_angle / 32768.f;
+        int16_t sd = swid / 2 * sr;
         sp->drawRect(sleft, stop, swid, shgt, TFT_WHITE);
-        sp->drawFastVLine(sleft + swid / 2, stop, shgt, TFT_RED);
-        sp->drawFastVLine(sleft + swid * ((player_steering_angle + 32768) / 65536.f), stop, shgt, TFT_WHITE);
+        sp->drawFastVLine(sleft + swid / 2,      stop, shgt, TFT_WHITE);
+        sp->drawFastVLine(sleft + swid / 2 + sd, stop, shgt, TFT_RED);
       }
-      
+
+      // Laptime
       sp->setCursor(1, sprite_height - sp->fontHeight() * 2);
       sp->setTextColor(TFT_WHITE);
       for(auto& s : lap_str) { sp->println(s); }
 
+      // Mini-map
       sp_map.setPivot(car[deviceId].x >> 16, car[deviceId].y >> 16);
       int px = sp->width() - (sprite_height >> 1);
       int py = sprite_height * 3 >> 2;
@@ -2681,6 +2720,7 @@ void drawRacing(LGFX_Device* gfx)
       sp->clearClipRect();
     }
 
+    // Countdown timer
     if(countDown) { drawCountdown(sp, y); }
 
     sprites[flip].pushSprite(gfx, 0, y);
