@@ -44,12 +44,12 @@ PROGMEM const char* errTable[] =
 };
 PROGMEM const char notifyDisconnect[] = "DISCONNECT";
 PROGMEM const char notifyConnectionLost[] = "CONNECTION_LOST";
-PROGMEM const char notifyShookhand[] = "SHOOKHAND";
+PROGMEM const char notifyShakehand[] = "SHOOKHAND";
 PROGMEM const char* notifyStringTable[] =
 {
     notifyDisconnect,
     notifyConnectionLost,
-    notifyShookhand,
+    notifyShakehand,
 };
 
 inline const char* notify_to_cstr(const Notify notify) { return notifyStringTable[to_underlying(notify)]; }
@@ -544,7 +544,7 @@ void Communicator::notify(const Notify n, const void* arg)
         //LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
         unregisterPeer(*paddr);
         break;
-    case Notify::Shookhands: break;
+    case Notify::Shakehand: break;
     default:
         LIB_LOGE("%s", "UNKNOWN");
         break;
@@ -793,12 +793,12 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
                 if(correct) { t->on_receive(addr, th); }
                 else
                 {
-                    auto rs = th->needReturnACK() ?
-                            t->_peerInfo[addr].recvSeq : t->_peerInfo[addr].recvAckSeq;
-                    LIB_LOGW("[Rejected[%u] P:%d %u/%llu(%llu)",
-                             t->_tid,
-                             th->hasPayload(),
-                             th->rudp.sequence, rs, rs & 255);
+                    auto rs = th->needReturnACK() ? t->_peerInfo[addr].recvSeq : t->_peerInfo[addr].recvAckSeq;
+
+
+                    LIB_LOGW("[Rejected[%u] %d %u/%llu %llu/%llu",
+                             t->_tid, th->needReturnACK(),
+                             th->rudp.sequence, rs & 255, t->_peerInfo[addr].recvSeq , t->_peerInfo[addr].recvAckSeq);
                     //LIB_LOGW("REJECT[%u] %lu %s", t->_tid, ms, t->debugInfo().c_str());
                 }
                 break;

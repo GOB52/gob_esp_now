@@ -93,12 +93,12 @@ class Transceiver
     ///@name Delivered up to this sequence number?
     ///@{
     //! @brief Has this sequence number been delivered to this address?
-    inline bool delivered(const uint64_t seq, const MACAddress& addr)
+    inline bool delivered(const uint64_t seq, const MACAddress& addr) const
     {
-        return seq <= _peerInfo[addr].recvAck;
+        return _peerInfo.count(addr) && seq <= _peerInfo.at(addr).recvAck;
     }
     ///!@brief Has this sequence number been delivered to all peers?
-    bool delivered(const uint64_t seq);
+    bool delivered(const uint64_t seq) const;
     ///@}
     
     //! @brief Reset sequence,ack...
@@ -224,9 +224,9 @@ class Transceiver
     
     bool make_data(uint64_t& seq, uint8_t* buf, const RUDP::Flag flag, const uint8_t* peer_addr, const void* data = nullptr, const uint8_t length = 0);
 
-    inline bool delivered(const uint8_t seq, const MACAddress& addr)
+    inline bool delivered(const uint8_t seq, const MACAddress& addr) const
     {
-        return delivered(restore_u64_earlier(_peerInfo[addr].sequence, seq), addr);
+        return _peerInfo.count(addr) && delivered(restore_u64_earlier(_peerInfo.at(addr).sequence, seq), addr);
     }
 
     // If derived, call the parent on_receive first!

@@ -33,13 +33,13 @@ enum class Role : uint8_t
   | --- | --- |
   | Disconnect | const MACAddress* |
   | ConnectionLost | const MACAddress* |
-  | Shookhands | const MACAddress* |  
+  | Shakehand | const MACAddress* |  
 */
 enum class Notify : uint8_t
 {
     Disconnect,     //!< @brief Actively disconnected
     ConnectionLost, //!< @brief Connection lost
-    Shookhands,     //!< @brief Completed the 3-way handshake
+    Shakehand,     //!< @brief Completed the 3-way handshake
 };
 //
 }}

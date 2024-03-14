@@ -55,7 +55,7 @@ class SystemTRX : public Transceiver
             PostSYN,    // (S)
             WaitSYNACK, // (S)
             PostACK,    // (S)
-            Shookhand,  // (P/S)
+            Shakehand,  // (P/S)
         };
         State status{State::None};
         unsigned long tm{};

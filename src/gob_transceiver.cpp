@@ -43,9 +43,9 @@ void Transceiver::clear(const MACAddress& addr)
     _peerInfo.erase(addr);
 }
 
-bool Transceiver::delivered(const uint64_t seq)
+bool Transceiver::delivered(const uint64_t seq) const
 {
-    return std::all_of(_peerInfo.begin(), _peerInfo.end(), [&seq](decltype(_peerInfo)::const_reference e)
+    return std::all_of(_peerInfo.cbegin(), _peerInfo.cend(), [&seq](decltype(_peerInfo)::const_reference e)
     {
         return seq <= e.second.recvAck;
     });
@@ -233,7 +233,7 @@ void Transceiver::on_receive(const MACAddress& addr, const TransceiverHeader* th
     LIB_LOGD("[RECV]:%u 0x%02x S:%u A:%u P:%u -> S:%llu => %llu A:%llu => %llu",
              th->tid, th->rudp.flag, th->rudp.sequence, th->rudp.ack, th->payloadSize(),
              base, rs, pi.recvAck, ra);
-    
+
     // isACK include NUL/SYN
     if(th->isACK())
     {

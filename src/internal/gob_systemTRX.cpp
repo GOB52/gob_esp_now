@@ -108,7 +108,7 @@ void SystemTRX::update(const unsigned long ms)
                 if(delivered(it->second.sequence, it->first))
                 {
                     LIB_LOGD("Recv ACK");
-                    it->second.status = SynInfo::State::Shookhand;
+                    it->second.status = SynInfo::State::Shakehand;
                 }
                 else if(ms - it->second.tm > SynInfo::TIMEOUT)
                 {
@@ -144,17 +144,17 @@ void SystemTRX::update(const unsigned long ms)
                 if(it->second.recvSeqSynAck && pi->sentAck >= it->second.recvSeqSynAck)
                 {
                     LIB_LOGE("Already posted ACK");
-                    it->second.status = SynInfo::State::Shookhand;
+                    it->second.status = SynInfo::State::Shakehand;
                     break;
                 }
                 LIB_LOGD("Post ACK");
-                if(post_ack(it->first)) { it->second.status = SynInfo::State::Shookhand; }
+                if(post_ack(it->first)) { it->second.status = SynInfo::State::Shakehand; }
                 else { LIB_LOGE("Failed to postACK"); }
                 break;
 
-            case SynInfo::State::Shookhand:
-                LIB_LOGE("Shookhand %s", it->first.toString().c_str());
-                comm.notify(Notify::Shookhands, &it->first);
+            case SynInfo::State::Shakehand:
+                LIB_LOGE("Shakehand %s", it->first.toString().c_str());
+                comm.notify(Notify::Shakehand, &it->first);
                 it->second.status = SynInfo::State::None;
                 ++_handshaked;
                 break;
