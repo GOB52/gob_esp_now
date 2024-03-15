@@ -28,7 +28,7 @@
  */
 namespace goblib {
 
-/*
+/*!
   @namespace esp_now
   @brief For ESP-NOW
  */

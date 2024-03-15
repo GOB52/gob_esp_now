@@ -87,17 +87,17 @@ class Transceiver
     ///@name Properties
     ///@{
     inline uint8_t identifier() const { return _tid; } //!< @brief Gets the identifier
-    inline const PeerInfo* peerInfo(const MACAddress& addr) const { return _peerInfo.count(addr) ? &_peerInfo.at(addr) : nullptr; }
+    inline const PeerInfo* peerInfo(const MACAddress& addr) const { return _peerInfo.count(addr) ? &_peerInfo.at(addr) : nullptr; } //!< @brief Gets the PeerInfo (Read only)
     ///@}
 
     ///@name Delivered up to this sequence number?
     ///@{
-    //! @brief Has this sequence number been delivered to this address?
+    /*! @brief Has this sequence number been delivered to this address? */
     inline bool delivered(const uint64_t seq, const MACAddress& addr) const
     {
         return _peerInfo.count(addr) && seq <= _peerInfo.at(addr).recvAck;
     }
-    ///!@brief Has this sequence number been delivered to all peers?
+    //! @brief Has this sequence number been delivered to all peers?
     bool delivered(const uint64_t seq) const;
     ///@}
     
@@ -129,7 +129,7 @@ class Transceiver
     ///@}
     
     ///@name Data transmission (Unreliable)
-    ///@note Parameters are the same as post/sendReliable
+    ///@note Parameters are the same as postReliable
     ///@{
     bool postUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length);
     inline bool postUnreliable(                   const void* data, const uint8_t length)  { return postUnreliable(nullptr, data, length); }
@@ -138,7 +138,9 @@ class Transceiver
     bool sendUnreliable(const uint8_t* peer_addr, const void* data, const uint8_t length);
     inline bool sendUnreliable(                   const void* data, const uint8_t length)  { return sendUnreliable(nullptr, data, length); }
     ///@}    
-   
+
+    ///@name Exclusive control
+    ///@{
     /*!
       @brief Call any function with lock
       @param Func Any functor
@@ -186,7 +188,7 @@ class Transceiver
         lock_guard lock(_sem);
         return func(std::forward<Args>(args)...);
     }
-
+    ///@}
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
     ///@name Debugging features

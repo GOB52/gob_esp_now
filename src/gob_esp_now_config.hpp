@@ -36,8 +36,9 @@ struct config_t
     //uint8_t session{};     //!< @brief  Session id
     //uint8_t outstanding{}; //!< @brief  The maximum number of segments that should be sent without getting an acknowledgment. (as window size)
 
-    //! @brief The maximum number of octets that can be received by the peer (Fixed ESP_NOW_MAX_DATA_LEN in this library)
+    // The maximum number of octets that can be received by the peer (Fixed ESP_NOW_MAX_DATA_LEN in this library)
     //uint8_t maximumSegmentSize{ESP_NOW_MAX_DATA_LEN};
+
     //! @brief The timeout value for retransmission of unacknowledged packets
     uint16_t retransmissionTimeout{320};
 
