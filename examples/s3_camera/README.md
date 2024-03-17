@@ -1,5 +1,7 @@
 # Example s3_camera
 
+<img src="https://github.com/GOB52/gob_esp_now/assets/26270227/24d46a45-2ab5-4a79-bb0d-c0d7cde6516d" width="25%" />
+
 [日本語](#概要)
 
 ## Overview

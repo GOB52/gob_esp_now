@@ -45,7 +45,7 @@ void comm_callback(const Notify notify, const void* arg)
         M5_LOGE("CONNECTION LOST\n%s", addr.toString().c_str());
         dirty = true;
         break;
-    case Notify::Shookhands:
+    case Notify::Shakehand:
         addr = *(const MACAddress*)arg;
         M5_LOGI("Complete handshake with %s", addr.toString().c_str());
         mode = comm.isPrimary() ? Mode::Primary : Mode::Secondary;
@@ -228,8 +228,8 @@ void secondary_loop()
 
 void idle_loop()
 {
-    // Broadcasting
-    if(comm.isNoRole() && M5.BtnA.wasClicked())
+    // Broadcasting if clicked any button. (Becomes primary)
+    if(comm.isNoRole() && (M5.BtnA.wasClicked() || M5.BtnB.wasClicked() || M5.BtnC.wasClicked()))
     {
         M5_LOGI("Broadcast");
         if(comm.broadcastHandshake())

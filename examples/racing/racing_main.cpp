@@ -3,7 +3,7 @@
  */
 
 //#define SOUND_VOLUME 64     // speaker volume setting
-#define SOUND_VOLUME 0
+#define SOUND_VOLUME 16
 
 #include <M5Unified.h>
 

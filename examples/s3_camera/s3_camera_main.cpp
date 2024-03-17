@@ -123,6 +123,12 @@ void comm_callback(const Notify notify, const void* arg)
     switch(notify)
     {
     case Notify::ConnectionLost:
+        M5_LOGW("Connection lost");
+        if(mode == Recv)
+        {
+            Image img{nullptr, 0};
+            xQueueSend(received, &img, 0);
+        }
         mode = Failed;
         break;
     default: break;
@@ -162,10 +168,8 @@ void setup()
         lcd.clear(TFT_RED);
         while(true) { delay(1000); }
     }
-    
-    auto cfg = comm.config();
-    cfg.nullSegmentTimeout = 0; // 0 means no use heartbeat.
-    comm.begin(APP_ID, cfg);
+
+    comm.begin(APP_ID);
     
     auto after = esp_get_free_heap_size();
     M5_LOGI("library usage:%u", before - after);
@@ -179,6 +183,14 @@ void setup()
     lcd.setFont(&fonts::Font4);
     unifiedButton.setFont(&fonts::Font4);
     lcd.clear(TFT_DARKGREEN);
+    if(M5.getBoard() != m5::board_t::board_M5StackCoreS3)
+    {
+        M5.Display.drawString("Waiting image...", 32, 32);
+    }
+    else
+    {
+        M5.Display.drawString("Click BtnA to start", 32, 32);
+    }
 }
 
 void send_loop()
@@ -208,7 +220,13 @@ void send_loop()
                 free(jbuf);
             }
 #else            
-            while(!imageTRX.send(target, jbuf, jlen)) { delay(1); } // If BUSY, repeat until transmission is complete.
+            // If BUSY, repeat until transmission is complete.
+            while(!imageTRX.send(target, jbuf, jlen))
+            {
+                M5.update();
+                if(M5.BtnPWR.wasClicked()) { M5_LOGI("%s", Communicator::instance().debugInfo().c_str()); }
+                delay(1);
+            } 
             ++scnt;
 #endif
         }
@@ -234,8 +252,7 @@ void send_loop()
     }
     lcd.setCursor(0,0);
     lcd.printf("HEAP:%u\n", esp_get_free_heap_size());
-    //lcd.printf("CFPS:%02u SFPS:%02u\n", cfps, sfps);
-    lcd.printf("SFPS:%02u\n", sfps);
+    lcd.printf("CFPS:%02u SFPS:%02u\n", cfps, sfps);
     lcd.printf("JPEG:%02d\n", jpeg_quality);
 #if defined(USING_UNRELIABLE)
     lcd.printf("UNRELIABLE");
@@ -254,9 +271,12 @@ void recv_loop()
     // Available queue?
     if(xQueueReceive(received, &img, portMAX_DELAY) == pdPASS)
     {
-        ++cnt;
-        decoder.drawJpg(img.ptr, img.size); // Using Core0/1 for rendering
-        free(img.ptr);
+        if(img.ptr)
+        {
+            ++cnt;
+            decoder.drawJpg(img.ptr, img.size); // Using Core0/1 for rendering
+            free(img.ptr);
+        }
     }
     
     auto now = millis();
@@ -307,10 +327,7 @@ void loop()
     M5.update();
     unifiedButton.update();
 
-    if(M5.BtnPWR.wasClicked())
-    {
-        M5_LOGI("%s", Communicator::instance().debugInfo().c_str());
-    }
+    if(M5.BtnPWR.wasClicked()) { M5_LOGI("%s", Communicator::instance().debugInfo().c_str()); }
 
     switch(mode)
     {

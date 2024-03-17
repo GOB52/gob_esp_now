@@ -1,5 +1,7 @@
 # Example 1on1
 
+<img src="https://github.com/GOB52/gob_esp_now/assets/26270227/f73bc387-0235-46e9-8af6-6511a94d8438" width="25%" />
+
 [日本語](#概要)
 
 ## Overview

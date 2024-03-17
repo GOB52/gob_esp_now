@@ -60,6 +60,10 @@ class ImageTRX : public TRX
     void purge();
 
     void setFinishedCallback(finished_callback_t f) { _callback = f; }
+
+#if !defined(NDEBUG)
+    String debugInfo() const;
+#endif
     
   protected:
     virtual void update(const unsigned long ms) override;

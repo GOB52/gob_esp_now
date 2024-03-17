@@ -38,8 +38,7 @@ constexpr uint8_t TRANSCEIVER_ID = 47;
 MACAddress devices[] =
 {
     MACAddress(DEVICE_A),
-    //MACAddress(DEVICE_B),
-    MACAddress(DEVICE_C),
+    MACAddress(DEVICE_B),
 };
 MACAddress target;
 TransferTRX transfer(TRANSCEIVER_ID);

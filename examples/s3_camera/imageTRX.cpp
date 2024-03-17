@@ -28,7 +28,7 @@ void ImageTRX::purge()
 // Start transfer (Sender)
 bool ImageTRX::send(const MACAddress& addr, uint8_t* buf, const size_t sz)
 {
-    if(inProgress()) { M5_LOGE("busy"); return false; }
+    if(inProgress()) { M5_LOGW("busy"); return false; }
 
     _buf.reset(buf);
     _size = sz;
@@ -216,3 +216,21 @@ void ImageTRX::onReceive(const MACAddress& addr, const void* data, const uint8_t
         break;
     }
 }
+
+#if !defined(NDEBUG)
+String ImageTRX::debugInfo() const
+{
+    using namespace goblib::esp_now;
+    
+    String s = Transceiver::debugInfo();
+    s += '\n';
+
+    s += formatString("[%s] ptr:%p sz:%zu pr:%zu len:%zu sp:%zu\n"
+                      "seq:%llu ST:%lu ET:%lu State:%u"
+                      ,
+                      _addr.toString().c_str(), _buf.get(), _size, _progress, _length, _speed,
+                      _sequence, _startTime, _endTime, _state
+                      );
+    return s;
+}
+#endif

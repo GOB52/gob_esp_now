@@ -1,5 +1,7 @@
 # Example file_transfer
 
+<img src="https://github.com/GOB52/gob_esp_now/assets/26270227/ea78d6d8-5899-411c-9be8-4dd29bcaaa61" width="25%" />
+
 [日本語](#概要)
 
 ## Overview
