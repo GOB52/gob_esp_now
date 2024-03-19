@@ -210,7 +210,7 @@ void setup()
     {
         if(!addr || addr == comm.address()) { continue; }
         M5_LOGI("Target: %s", addr.toString().c_str());
-        if(!comm.registerPeer(addr))
+        if(!comm.addPeer(addr))
         {
             M5_LOGE("Failed to register target peer");
             lcd.clear(TFT_RED);

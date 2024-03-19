@@ -288,8 +288,10 @@ void Communicator::update()
     lock_guard _(_sem);
     if(!_began) { return; }
 
+#if !defined(NDEBUG)
     ++_update_count;
-    
+#endif    
+
     auto ms = millis();
     unsigned long startTime{};
     bool sent{};
@@ -402,6 +404,7 @@ bool Communicator::post(const uint8_t* peer_addr, const void* data, const uint8_
 {
     if(peer_addr && !esp_now_is_peer_exist(peer_addr)) { LIB_LOGE("peer_addr not exists"); return false; }
 
+    lock_guard _(_sem); 
     MACAddress addr(peer_addr);
 
     auto& packet = _queue[addr]; // Create empty packet if not exiets.
@@ -542,7 +545,7 @@ void Communicator::notify(const Notify n, const void* arg)
     case Notify::Disconnect: // [[fallthrough]]
     case Notify::ConnectionLost:
         //LIB_LOGI("%s[%s]", notify_to_cstr(n), paddr->toString().c_str());
-        unregisterPeer(*paddr);
+        delPeer(*paddr);
         break;
     case Notify::Shakehand: break;
     default:
@@ -594,7 +597,7 @@ bool Communicator::unregisterTransceiver(Transceiver* t)
     return true;
 }
 
-bool Communicator::registerPeer(const MACAddress& addr, const uint8_t channel, const bool encrypt, const uint8_t* lmk)
+bool Communicator::addPeer(const MACAddress& addr, const uint8_t channel, const bool encrypt, const uint8_t* lmk)
 {
     if(!addr) { LIB_LOGE("Null address"); return false; }
 
@@ -630,7 +633,7 @@ bool Communicator::registerPeer(const MACAddress& addr, const uint8_t channel, c
     return ret == ESP_OK;;
 }
 
-void Communicator::unregisterPeer(const MACAddress& addr)
+void Communicator::delPeer(const MACAddress& addr)
 {
     if(!addr) { LIB_LOGE("Null address"); return; }
 
@@ -764,7 +767,9 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     //    LIB_LOGD("---- RECV:[%s]", addr.toString().c_str());
     lock_guard _(_sem);
 
+#if !defined(NDEBUG)    
     ++_receive_count;
+#endif
     
     auto ms = millis();
     _state[addr].recvTime = ms;
@@ -808,7 +813,6 @@ void Communicator::onReceive(const MACAddress& addr, const uint8_t* data, const 
     }
 }
 
-
 bool Communicator::isHandshakeAllowed() const
 {
     return _sysTRX->isHandshakeAllowed();
@@ -837,7 +841,7 @@ void Communicator::setMaxHandshakePeer(const uint8_t num)
 bool Communicator::broadcastHandshake()
 {
     if(isHandshakeDenied()) { LIB_LOGE("Handshake denied"); return false; }
-    if(!existsPeer(BROADCAST) &&!registerPeer(BROADCAST)) { return false; }
+    if(!existsPeer(BROADCAST) && !addPeer(BROADCAST)) { return false; }
     return _sysTRX->broadcastHandshake();
 }
 

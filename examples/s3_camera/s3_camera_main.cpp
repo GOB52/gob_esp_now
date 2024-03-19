@@ -156,7 +156,7 @@ void setup()
     {
         if(!addr || addr == comm.address()) { continue; }
         M5_LOGI("Target: %s", addr.toString().c_str());
-        comm.registerPeer(addr);
+        comm.addPeer(addr);
         target = addr;
     }
     comm.setRole(comm.address() == devices[0] ? Role::Primary : Role::Secondary);

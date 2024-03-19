@@ -51,7 +51,7 @@ void comm_callback(const Notify notify, const void* arg)
         mode = comm.isPrimary() ? Mode::Primary : Mode::Secondary;
 
         buttonTRX.begin();
-        comm.unregisterPeer(BROADCAST);
+        comm.delPeer(BROADCAST);
 
         M5_LOGI("%s", comm.debugInfo().c_str());
         dirty = true;

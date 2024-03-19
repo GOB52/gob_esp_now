@@ -62,7 +62,7 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
     {
         uint64_t seq{};
         make_data(seq, buf, RUDP::Flag::ACK, peer_addr, data, length);
-        return Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf)) ? seq : 0;
+        return Communicator::instance().post(peer_addr, buf, sizeof(buf)) ? seq : 0;
     }
     //All peers (Separate to each peer)
 #if 1
@@ -77,7 +77,7 @@ uint64_t Transceiver::postReliable(const uint8_t* peer_addr, const void* data, c
 
         uint64_t seq{};
         make_data(seq, buf, RUDP::Flag::ACK, info.peer_addr, data, length);
-        if(!Communicator::instance().postWithLock(info.peer_addr, buf, sizeof(buf)))
+        if(!Communicator::instance().post(info.peer_addr, buf, sizeof(buf)))
         {
             LIB_LOGE("Failed to post %s", MACAddress(info.peer_addr).toString().c_str());
             return 0;
@@ -110,7 +110,7 @@ bool Transceiver::postUnreliable(const uint8_t* peer_addr, const void* data, con
     uint8_t buf[sizeof(TransceiverHeader) + length]{};
     uint64_t seq{};
     return make_data(seq, buf, RUDP::Flag::NONE, peer_addr, data, length) && 
-            Communicator::instance().postWithLock(peer_addr, buf, sizeof(buf));
+            Communicator::instance().post(peer_addr, buf, sizeof(buf));
 }
 
 void Transceiver::build_peer_map()

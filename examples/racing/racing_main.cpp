@@ -1771,7 +1771,7 @@ void comm_callback(const Notify notify, const void* arg)
     case Notify::Shakehand:
         target = *(const MACAddress*)arg;
         M5_LOGI("Complete handshake with %s", target.toString().c_str());
-        comm.unregisterPeer(BROADCAST);
+        comm.delPeer(BROADCAST);
     default: break;
     }
 }

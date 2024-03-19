@@ -113,7 +113,7 @@ void SystemTRX::update(const unsigned long ms)
                 else if(ms - it->second.tm > SynInfo::TIMEOUT)
                 {
                     LIB_LOGW("Wait ACK timeout");
-                    comm.unregisterPeer(it->first);
+                    comm.delPeer(it->first);
                     it->second.status = SynInfo::State::None;
                 }
                 break;
@@ -135,7 +135,7 @@ void SystemTRX::update(const unsigned long ms)
                 if(ms - it->second.tm > SynInfo::TIMEOUT)
                 {
                     LIB_LOGW("Wait SYNACK timeout");
-                    comm.unregisterPeer(it->first);
+                    comm.delPeer(it->first);
                     it->second.status = SynInfo::State::None;
                 }
                 break;
@@ -198,7 +198,7 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
             }
             LIB_LOGE("Receive Handshake %s", addr.toString().c_str());
             auto& comm = Communicator::instance();
-            if(comm.registerPeer(addr))
+            if(comm.addPeer(addr))
             {
                 _synInfo[addr].status = SynInfo::State::PostSYN;
             }
@@ -231,7 +231,7 @@ void SystemTRX::on_receive(const MACAddress& addr, const TransceiverHeader* th)
                     return;
                 }
                 comm.setRole(Role::Primary);
-                if(Communicator::instance().registerPeer(addr))
+                if(Communicator::instance().addPeer(addr))
                 {
                     _synInfo[addr].status = SynInfo::State::PostSYNACK;
                 }

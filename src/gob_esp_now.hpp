@@ -74,7 +74,6 @@ class Communicator
     inline const MACAddress& address() const  { return _addr; } //!< @brief Gets the self address
     inline const MACAddress& primaryAddress() const  { return _primaryAddr; } //!< @brief Gets the primary address if exists
     inline unsigned long lastSentTime() const { return _lastSentTime; } //!< @brief Gets the last sent time
-    inline config_t config() const { return _config; } //!< @brief Gets the configuretion
     ///@}
 
     ///@name Role
@@ -87,9 +86,13 @@ class Communicator
     inline bool isNoRole() const   { return _role == Role::None; } //!< @brief No role?
     inline bool isAnyRole() const  { return !isNoRole(); } //!< @breif is any role?
     ///@}
-    
-    /*! @brief Change config */
-    void config(const config_t& cfg) { with_lock([this, &cfg]() { _config = cfg; }); }
+
+
+    ///@name Config
+    ///@{
+    inline config_t config() const { return _config; } //!< @brief Gets the configuretion
+    inline void config(const config_t& cfg) { with_lock([this, &cfg]() { _config = cfg; }); } //!<@brief Change config
+    ///@}
     
     /*!
       @brief Begin communication
@@ -107,6 +110,8 @@ class Communicator
       @brief Update comminicator
       @note Transmission of posted data is done here
       @note Registered transceivers are also updated here
+      @warning No need to call it explicitly by default (it is called in the task)
+      @warning config.update_priority set to 0, explicitly call thisfunction.
      */
     void update();
 
@@ -121,33 +126,18 @@ class Communicator
     ///@name Peer
     ///@warning Peer status is shared with ESP-NOW
     ///@{
-    bool registerPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief Register the peer
-    void unregisterPeer(const MACAddress& addr); //!< @brief Unregister the peer
-
+    bool addPeer(const MACAddress& addr, const uint8_t channel = 0, const bool encrypt = false, const uint8_t* lmk = nullptr); //!< @brief add peer
+    void delPeer(const MACAddress& addr); //!< @brief delete peer
     /*!
       @brief Clear all peer
       @warning Cannot clear multicast address. Explicitly call unregisterPeer if you want to erase it.
     */
     void clearPeer();
-    uint8_t numOfPeer(); //!< @brief Number of registered peers
+    uint8_t numOfPeer(); //!< @brief Number of peers (only Unicast)
     bool existsPeer(const MACAddress& addr); //!< @brief Exists peer?
-    const std::vector<MACAddress> getPeerAddresses() const; //!< @brief Gets the addresses of registered unicast peer
+    const std::vector<MACAddress> getPeerAddresses() const; //!< @brief Gets the addresses of added unicast peers
     ///@}
-    
-    /*!
-      @brief Post data
-      @param peer_addr MAC address (send all unicast peer if nullptr)
-      @param data data pointer
-      @param length Length of data
-      @note Only stores data, actual transmission is done by update()
-     */
-    bool post(const uint8_t* peer_addr, const void* data, const uint8_t length);
-    //! @brief Post data with lock
-    bool postWithLock(const uint8_t* peer_addr, const void* data, const uint8_t length)
-    {
-        lock_guard _(_sem);
-        return post(peer_addr, data, length);
-    }
+
     /*!
       @brief Call any function with lock
       @param Func Any functor
@@ -180,12 +170,15 @@ class Communicator
     void enableHandshake(const bool enable); //!< @brief Allow/deny SYN request response
     uint8_t  getMaxHandshakePeer() const; //!< @brief Gets the maximum number of peers that can be handshaked
     void setMaxHandshakePeer(const uint8_t num); //!< @brief Set the maximum number of peers that can be handshaked
-    bool broadcastHandshake(); //!< @breif Broadcast transmission of connection negotiations
+    bool broadcastHandshake(); //!< @brief Broadcast transmission of connection negotiations
     bool postSYN(const MACAddress& addr); //!< @brief Post SYN request
     uint8_t numOfHandshakedPeer() const; //!< @brief Gets the number of handshaked peer
     ///@}
     
 #if !defined(NDEBUG) || defined(DOXYGEN_PROCESS)
+    uint32_t updateCount() const { return _update_count; }
+    uint32_t receiveCount() const { return _receive_count; }
+
     ///@name Debugging features
     ///@warning Conditions of use, <em><strong>NDEBUG must NOT be DEFINED.</strong></em>
     ///@{
@@ -219,17 +212,13 @@ class Communicator
     ///@endcond
 
     Communicator();
-    
-    ///@name Callback
-    ///@note Called from WiFi-task (Core 0)
-    /// @sa https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html
-    ///@{
+
     static void callback_onSent(const uint8_t *mac_addr, esp_now_send_status_t status);
     void onSent(const MACAddress& addr, const esp_now_send_status_t status);
     static void callback_onReceive(const uint8_t *mac_addr, const uint8_t* data, int length);
     void onReceive(const MACAddress& addr, const uint8_t* data, const uint8_t length);
-    ///@}
 
+    bool post(const uint8_t* peer_addr, const void* data /* transceiverHeader* */, const uint8_t length);    
     bool send_esp_now(const uint8_t* peer_addr, /* DON'T const!! Calls td::move in funciton */std::vector<uint8_t>& packet);
     bool remove_acked(const MACAddress& addr, std::vector<uint8_t>& packet);
     void reset_sent_state(const MACAddress& addr);
@@ -241,13 +230,6 @@ class Communicator
   private:
     mutable SemaphoreHandle_t _sem{};
     TaskHandle_t _update_task{}, _receive_task{};
-    uint32_t _update_count{}, _receive_count{};
-  public:
-    uint32_t update_count() const { return _update_count; }
-    uint32_t receive_count() const { return _receive_count; }
-
-  private:
-    
     QueueHandle_t _permitToSend{}, _postedAny{};
 
     struct RecvQueueData
@@ -289,8 +271,10 @@ class Communicator
 #if !defined(NDEBUG)
     bool _debugEnable{};
     float _debugSendLoss{}, _debugRecvLoss{};
+    uint32_t _update_count{}, _receive_count{};
 #endif
 
+    friend class Transceiver;
     friend class SystemTRX;
 };
 //

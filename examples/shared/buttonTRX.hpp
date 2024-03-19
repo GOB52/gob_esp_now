@@ -39,7 +39,7 @@ class ButtonTRX : public goblib::esp_now::Transceiver
     };
     
     explicit ButtonTRX(const uint8_t tid) : goblib::esp_now::Transceiver(tid) {}
-    virtual ~ButtonTRX() {}
+    ButtonTRX() = delete;
 
     inline bool enabled() const { return _enable; }
     inline const Button_Class& BtnA(const MACAddress& addr) { return _button[addr].buttons[0]; }

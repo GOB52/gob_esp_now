@@ -123,6 +123,8 @@ class Transceiver
     //! @brief Post to all peer
     inline uint64_t postReliable(                   const void* data, const uint8_t length) { return postReliable(nullptr, data, length); }
     //! @brief Post to destination
+    inline uint64_t postReliable(const MACAddress& addr,   const void* data, const uint8_t length) { return postReliable(addr.data(), data, length); }
+    //! @brief Post to destination
     template<typename T> inline uint64_t postReliable(const MACAddress& addr, const T& data) { return postReliable(addr.peer_addr(), &data ,sizeof(data)); }
     //! @brief Post to all peer
     template<typename T> inline uint64_t postReliable(                        const T& data) { return postReliable(nullptr,     &data ,sizeof(data)); }
